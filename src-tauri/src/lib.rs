@@ -1,5 +1,7 @@
 mod commands;
+mod idle;
 mod state;
+mod sync_headers;
 
 use state::AppState;
 
@@ -28,6 +30,8 @@ pub fn run() {
             commands::open_message,
             commands::select_account,
             commands::selected_account_id,
+            commands::get_connection_status,
+            commands::watch_account,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

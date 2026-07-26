@@ -193,6 +193,33 @@ pub fn logout(session: Session) {
     let _ = session.logout();
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleWaitResult {
+    MailboxChanged,
+    TimedOut,
+}
+
+/// Whether the server advertises IDLE.
+pub fn session_supports_idle(session: &mut Session) -> bool {
+    session
+        .capabilities()
+        .map(|c| c.has_str("IDLE"))
+        .unwrap_or(false)
+}
+
+/// Block on IDLE until mailbox changes or `timeout` elapses.
+pub fn idle_wait(session: &mut Session, timeout: std::time::Duration) -> Result<IdleWaitResult> {
+    let mut handle = session.idle()?;
+    handle.set_keepalive(std::time::Duration::from_secs(25 * 60));
+    match handle.wait_with_timeout(timeout)? {
+        imap::extensions::idle::WaitOutcome::MailboxChanged => Ok(IdleWaitResult::MailboxChanged),
+        imap::extensions::idle::WaitOutcome::TimedOut => Ok(IdleWaitResult::TimedOut),
+    }
+}
+
+/// Expose Session type for the IDLE worker loop in the app layer via callbacks.
+pub type ImapSession = Session;
+
 fn format_uid_set(uids: &[u32]) -> String {
     // Collapse consecutive UIDs into ranges for smaller commands.
     if uids.is_empty() {

@@ -27,6 +27,9 @@ export const strings = {
   from: "From",
   to: "To",
   date: "Date",
+  statusOnline: "Connected",
+  statusOffline: "Offline — showing cached mail",
+  statusReconnecting: "Reconnecting…",
   gmailOauthNotConfigured:
     "Gmail OAuth is not configured. Set HARBOR_GMAIL_CLIENT_ID or add oauth.json in the data directory.",
   outlookOauthNotConfigured:

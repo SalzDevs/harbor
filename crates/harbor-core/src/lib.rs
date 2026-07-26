@@ -1,6 +1,7 @@
 //! Pure mail domain types and logic. No Tauri, no SQLite.
 
 pub mod account;
+pub mod connection;
 pub mod folder;
 pub mod imap;
 pub mod message;
@@ -10,6 +11,7 @@ pub mod paths;
 pub mod strings;
 
 pub use account::{Account, AccountId, AccountStatus, ParseProviderError, Provider};
+pub use connection::{ConnectionKind, ConnectionStatus, FolderMailUpdated};
 pub use folder::{Folder, FolderId, FolderRole};
 pub use message::{
     FetchedHeader, FolderSyncProgress, FolderSyncResult, FolderSyncState, MessageBody,

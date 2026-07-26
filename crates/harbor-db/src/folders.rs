@@ -9,6 +9,7 @@ use crate::store::Db;
 pub trait FolderRepo {
     fn list_folders(&self, account_id: &AccountId) -> Result<Vec<Folder>>;
     fn get_folder(&self, folder_id: &FolderId) -> Result<Option<Folder>>;
+    fn find_inbox(&self, account_id: &AccountId) -> Result<Option<Folder>>;
     /// Upsert by (account_id, imap_name) so folder IDs stay stable across syncs.
     fn replace_folders(&self, account_id: &AccountId, remote: &[RemoteFolder]) -> Result<Vec<Folder>>;
 }
@@ -49,6 +50,33 @@ impl FolderRepo for Db {
             Ok(Some(map_folder(row)?))
         } else {
             Ok(None)
+        }
+    }
+
+    fn find_inbox(&self, account_id: &AccountId) -> Result<Option<Folder>> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id, account_id, imap_name, delimiter, role, name
+             FROM folders
+             WHERE account_id = ?1 AND role = 'inbox'
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query([account_id.as_str()])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(map_folder(row)?))
+        } else {
+            // Fallback: IMAP name INBOX
+            let mut stmt = self.conn().prepare(
+                "SELECT id, account_id, imap_name, delimiter, role, name
+                 FROM folders
+                 WHERE account_id = ?1 AND upper(imap_name) = 'INBOX'
+                 LIMIT 1",
+            )?;
+            let mut rows = stmt.query([account_id.as_str()])?;
+            if let Some(row) = rows.next()? {
+                Ok(Some(map_folder(row)?))
+            } else {
+                Ok(None)
+            }
         }
     }
 

@@ -4,7 +4,7 @@ mod session;
 mod xoauth2;
 
 pub use session::{
-    fetch_headers_for_uids, fetch_message_bytes, fetch_raw_message, imap_host, list_remote_folders,
-    logout, search_all_uids, search_uids_after, select_mailbox, ImapError, MailboxMeta,
-    RemoteFolder,
+    fetch_headers_for_uids, fetch_message_bytes, fetch_raw_message, idle_wait, imap_host,
+    list_remote_folders, logout, search_all_uids, search_uids_after, select_mailbox,
+    session_supports_idle, IdleWaitResult, ImapError, ImapSession, MailboxMeta, RemoteFolder,
 };

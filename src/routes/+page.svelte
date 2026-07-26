@@ -11,13 +11,20 @@
   } from "$lib/accounts";
   import MessageList from "$lib/components/MessageList.svelte";
   import ReadingPane from "$lib/components/ReadingPane.svelte";
+  import {
+    connectionLabel,
+    getConnectionStatus,
+    watchAccount,
+  } from "$lib/connection";
   import { folderLabel, listFolders, syncFolders } from "$lib/folders";
   import { listMessages, openMessage, syncFolderHeaders } from "$lib/messages";
   import { strings } from "$lib/strings";
   import type {
     Account,
     AppInfo,
+    ConnectionStatus,
     Folder,
+    FolderMailUpdated,
     FolderSyncProgress,
     MessageDetail,
     MessageListItem,
@@ -40,10 +47,13 @@
   let signingIn = $state(false);
   let syncingFolders = $state(false);
   let syncProgress = $state<FolderSyncProgress | null>(null);
+  let connection = $state<ConnectionStatus | null>(null);
   let headerSyncToken = 0;
   let openToken = 0;
 
   let unlistenProgress: UnlistenFn | null = null;
+  let unlistenStatus: UnlistenFn | null = null;
+  let unlistenMail: UnlistenFn | null = null;
 
   const activeAccount = $derived(
     accounts.find((a) => a.id === activeId) ?? null,
@@ -51,6 +61,7 @@
   const activeFolder = $derived(
     folders.find((f) => f.id === activeFolderId) ?? null,
   );
+  const statusText = $derived(connectionLabel(connection));
 
   onMount(async () => {
     unlistenProgress = await listen<FolderSyncProgress>(
@@ -61,11 +72,38 @@
         }
       },
     );
+    unlistenStatus = await listen<ConnectionStatus>(
+      "connection-status",
+      (event) => {
+        connection = event.payload;
+      },
+    );
+    unlistenMail = await listen<FolderMailUpdated>(
+      "folder-mail-updated",
+      async (event) => {
+        if (event.payload.folderId === activeFolderId) {
+          try {
+            const page = await listMessages(event.payload.folderId, 300, 0);
+            messages = page.messages;
+            messageTotal = page.total;
+          } catch {
+            /* keep cached list */
+          }
+        }
+      },
+    );
+    try {
+      connection = await getConnectionStatus();
+    } catch {
+      /* ignore */
+    }
     await reload();
   });
 
   onDestroy(() => {
     unlistenProgress?.();
+    unlistenStatus?.();
+    unlistenMail?.();
   });
 
   async function reload() {
@@ -77,6 +115,8 @@
       if (!activeId && accounts.length > 0) {
         activeId = accounts[0].id;
         await selectAccount(activeId);
+      } else if (activeId) {
+        await watchAccount(activeId).catch(() => undefined);
       }
       if (activeId) {
         await loadFolders(activeId, false);
@@ -232,6 +272,17 @@
 </script>
 
 <div class="shell">
+  {#if statusText}
+    <div
+      class="conn-bar"
+      class:online={connection?.kind === "online"}
+      class:offline={connection?.kind === "offline"}
+      class:reconnecting={connection?.kind === "reconnecting"}
+      role="status"
+    >
+      {statusText}
+    </div>
+  {/if}
   <aside class="pane folders" aria-label="Folders">
     <div class="pane-label">{strings.accounts}</div>
     <div class="account-list">
@@ -332,9 +383,35 @@
   .shell {
     display: grid;
     grid-template-columns: 260px 360px 1fr;
+    grid-template-rows: auto 1fr;
     height: 100vh;
     width: 100vw;
     background: var(--bg);
+  }
+
+  .conn-bar {
+    grid-column: 1 / -1;
+    padding: 4px 12px;
+    font-size: 11px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+  }
+
+  .conn-bar.online {
+    color: #3fb950;
+  }
+
+  .conn-bar.offline {
+    color: var(--text-muted);
+  }
+
+  .conn-bar.reconnecting {
+    color: #d29922;
+  }
+
+  .pane {
+    grid-row: 2;
   }
 
   .pane {

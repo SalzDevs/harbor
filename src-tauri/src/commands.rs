@@ -1,21 +1,14 @@
-use harbor_core::imap::{
-    fetch_headers_for_uids, fetch_message_bytes, list_remote_folders, logout, search_all_uids,
-    search_uids_after, select_mailbox,
-};
-use harbor_core::oauth::{
-    gmail_token_url, load_oauth_config, outlook_token_url, refresh_access_token, sign_in_gmail,
-    sign_in_outlook, OAuthClientConfig, OAuthTokenSet, TokenRefreshRequest,
-};
+use harbor_core::imap::{fetch_message_bytes, list_remote_folders};
+use harbor_core::oauth::{load_oauth_config, sign_in_gmail, sign_in_outlook, OAuthTokenSet};
 use harbor_core::{
-    parse_message_bytes, strings, Account, AccountId, Folder, FolderId, FolderSyncProgress,
-    FolderSyncResult, FolderSyncState, MessageDetail, MessageId, MessagePage, Provider,
+    parse_message_bytes, strings, Account, AccountId, ConnectionStatus, Folder, FolderId,
+    FolderSyncResult, MessageDetail, MessageId, MessagePage, Provider,
 };
 use harbor_db::{AccountRepo, FolderRepo, MessageRepo, TokenRepo};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 
 use crate::state::AppState;
-
-const HEADER_BATCH: usize = 150;
+use crate::sync_headers::{ensure_fresh_access_token, sync_folder_headers_inner};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,7 +42,10 @@ pub fn list_accounts(state: State<'_, AppState>) -> Result<Vec<Account>, String>
 }
 
 #[tauri::command]
-pub fn sign_in_gmail_account(state: State<'_, AppState>) -> Result<Account, String> {
+pub fn sign_in_gmail_account(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Account, String> {
     let data_dir = harbor_db::data_dir();
     let cfg = load_oauth_config(&data_dir).map_err(|e| e.to_string())?;
     let client = cfg.gmail.ok_or_else(|| {
@@ -68,11 +64,15 @@ pub fn sign_in_gmail_account(state: State<'_, AppState>) -> Result<Account, Stri
         signed.tokens,
     )?;
     let _ = sync_folders_for_account(&state, &account.id);
+    start_idle_watch(&app, &state, &account.id);
     Ok(account)
 }
 
 #[tauri::command]
-pub fn sign_in_outlook_account(state: State<'_, AppState>) -> Result<Account, String> {
+pub fn sign_in_outlook_account(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Account, String> {
     let data_dir = harbor_db::data_dir();
     let cfg = load_oauth_config(&data_dir).map_err(|e| e.to_string())?;
     let client = cfg.outlook.ok_or_else(|| {
@@ -91,6 +91,7 @@ pub fn sign_in_outlook_account(state: State<'_, AppState>) -> Result<Account, St
         signed.tokens,
     )?;
     let _ = sync_folders_for_account(&state, &account.id);
+    start_idle_watch(&app, &state, &account.id);
     Ok(account)
 }
 
@@ -116,85 +117,14 @@ pub fn refresh_account_token(
     account_id: String,
 ) -> Result<bool, String> {
     let id = AccountId(account_id);
-    ensure_fresh_access_token(&state, &id).map(|r| r.refreshed)
-}
-
-struct FreshToken {
-    access_token: String,
-    refreshed: bool,
-}
-
-fn ensure_fresh_access_token(
-    state: &State<'_, AppState>,
-    id: &AccountId,
-) -> Result<FreshToken, String> {
-    let data_dir = harbor_db::data_dir();
-    let cfg = load_oauth_config(&data_dir).map_err(|e| e.to_string())?;
-
-    let (provider, tokens) = {
+    let before = {
         let db = state.db.lock().map_err(|e| e.to_string())?;
-        let account = db
-            .get_account(id)
+        db.load_tokens(&id)
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("account not found: {}", id.as_str()))?;
-        let tokens = db
-            .load_tokens(id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "no tokens stored for account".to_string())?;
-        (account.provider, tokens)
+            .map(|t| t.access_token)
     };
-
-    let (token_url, client): (&str, OAuthClientConfig) = match provider {
-        Provider::Gmail => (
-            gmail_token_url(),
-            cfg.gmail
-                .ok_or_else(|| "Gmail OAuth is not configured".to_string())?,
-        ),
-        Provider::Outlook => (
-            outlook_token_url(),
-            cfg.outlook
-                .ok_or_else(|| "Outlook OAuth is not configured".to_string())?,
-        ),
-    };
-
-    if let Some(exp) = tokens.expires_at {
-        let now = now_unix();
-        if exp > now + 60 {
-            return Ok(FreshToken {
-                access_token: tokens.access_token,
-                refreshed: false,
-            });
-        }
-    }
-
-    let refresh = tokens
-        .refresh_token
-        .as_deref()
-        .ok_or_else(|| "no refresh token stored".to_string())?;
-
-    let refreshed = refresh_access_token(TokenRefreshRequest {
-        token_url,
-        client: &client,
-        refresh_token: refresh,
-    })
-    .map_err(|e| e.to_string())?;
-
-    {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        db.save_tokens(id, &refreshed).map_err(|e| e.to_string())?;
-    }
-
-    Ok(FreshToken {
-        access_token: refreshed.access_token,
-        refreshed: true,
-    })
-}
-
-fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    let fresh = ensure_fresh_access_token(&state.db, &id)?;
+    Ok(before.as_deref() != Some(fresh.access_token.as_str()))
 }
 
 #[tauri::command]
@@ -232,7 +162,7 @@ fn sync_folders_for_account(
         (account.provider, email)
     };
 
-    let fresh = ensure_fresh_access_token(state, id)?;
+    let fresh = ensure_fresh_access_token(&state.db, id)?;
     let remote =
         list_remote_folders(provider, &email, &fresh.access_token).map_err(|e| e.to_string())?;
 
@@ -255,7 +185,6 @@ pub fn list_messages(
         .map_err(|e| e.to_string())
 }
 
-/// Incremental header sync for one folder. Emits `folder-sync-progress`.
 #[tauri::command]
 pub fn sync_folder_headers(
     app: AppHandle,
@@ -263,114 +192,9 @@ pub fn sync_folder_headers(
     folder_id: String,
 ) -> Result<FolderSyncResult, String> {
     let folder_id = FolderId(folder_id);
-
-    let (account_id, provider, email, imap_name) = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        let folder = db
-            .get_folder(&folder_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("folder not found: {}", folder_id.as_str()))?;
-        let account = db
-            .get_account(&folder.account_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "account not found".to_string())?;
-        if account.status != harbor_core::AccountStatus::Connected {
-            return Err("account is not connected".into());
-        }
-        let email = account
-            .email
-            .ok_or_else(|| "account has no email".to_string())?;
-        (
-            folder.account_id,
-            account.provider,
-            email,
-            folder.imap_name,
-        )
-    };
-
-    let fresh = ensure_fresh_access_token(&state, &account_id)?;
-    let (mut session, meta) =
-        select_mailbox(provider, &email, &fresh.access_token, &imap_name)
-            .map_err(|e| e.to_string())?;
-
-    let prior = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        db.get_folder_sync_state(&folder_id)
-            .map_err(|e| e.to_string())?
-    };
-
-    let mut last_uid = 0u32;
-    if let Some(prev) = prior {
-        if prev.uidvalidity != meta.uidvalidity {
-            let db = state.db.lock().map_err(|e| e.to_string())?;
-            db.clear_folder_memberships(&folder_id)
-                .map_err(|e| e.to_string())?;
-        } else {
-            last_uid = prev.last_uid;
-        }
-    }
-
-    let new_uids = search_uids_after(&mut session, last_uid).map_err(|e| e.to_string())?;
-    let total = new_uids.len() as u32;
-    let mut fetched = 0u32;
-
-    let _ = app.emit(
-        "folder-sync-progress",
-        FolderSyncProgress {
-            folder_id: folder_id.clone(),
-            fetched: 0,
-            total,
-        },
-    );
-
-    for chunk in new_uids.chunks(HEADER_BATCH) {
-        let headers =
-            fetch_headers_for_uids(&mut session, chunk).map_err(|e| e.to_string())?;
-        {
-            let db = state.db.lock().map_err(|e| e.to_string())?;
-            db.upsert_fetched_headers(&account_id, &folder_id, &headers)
-                .map_err(|e| e.to_string())?;
-        }
-        if let Some(max) = chunk.iter().max() {
-            last_uid = last_uid.max(*max);
-        }
-        fetched += chunk.len() as u32;
-        let _ = app.emit(
-            "folder-sync-progress",
-            FolderSyncProgress {
-                folder_id: folder_id.clone(),
-                fetched,
-                total,
-            },
-        );
-    }
-
-    // Expunge: drop local UIDs no longer on server.
-    let live = search_all_uids(&mut session).map_err(|e| e.to_string())?;
-    {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        db.retain_folder_uids(&folder_id, &live)
-            .map_err(|e| e.to_string())?;
-        db.set_folder_sync_state(&FolderSyncState {
-            folder_id: folder_id.clone(),
-            uidvalidity: meta.uidvalidity,
-            last_uid,
-            uidnext: meta.uidnext,
-            last_synced_at: Some(now_unix()),
-        })
-        .map_err(|e| e.to_string())?;
-    }
-
-    logout(session);
-
-    Ok(FolderSyncResult {
-        folder_id,
-        fetched,
-        total,
-    })
+    sync_folder_headers_inner(Some(&app), &state.db, &folder_id)
 }
 
-/// Open a message: return cached body or FETCH + parse + cache, then detail.
 #[tauri::command]
 pub fn open_message(
     state: State<'_, AppState>,
@@ -406,7 +230,7 @@ pub fn open_message(
                 .ok_or_else(|| "account has no email".to_string())?;
             (account.provider, email)
         };
-        let fresh = ensure_fresh_access_token(&state, &location.account_id)?;
+        let fresh = ensure_fresh_access_token(&state.db, &location.account_id)?;
         let raw = fetch_message_bytes(
             provider,
             &email,
@@ -428,11 +252,19 @@ pub fn open_message(
 }
 
 #[tauri::command]
-pub fn select_account(state: State<'_, AppState>, account_id: String) -> Result<(), String> {
+pub fn select_account(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account_id: String,
+) -> Result<(), String> {
     let id = AccountId(account_id);
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.set_selected_account_id(Some(&id))
-        .map_err(|e| e.to_string())
+    {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.set_selected_account_id(Some(&id))
+            .map_err(|e| e.to_string())?;
+    }
+    start_idle_watch(&app, &state, &id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -443,3 +275,40 @@ pub fn selected_account_id(state: State<'_, AppState>) -> Result<Option<String>,
         .map_err(|e| e.to_string())?
         .map(|id| id.0))
 }
+
+#[tauri::command]
+pub fn get_connection_status(state: State<'_, AppState>) -> Result<ConnectionStatus, String> {
+    let status = state
+        .connection_status
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+    Ok(status)
+}
+
+/// Start or restart IDLE/poll for an account (INBOX).
+#[tauri::command]
+pub fn watch_account(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account_id: String,
+) -> Result<(), String> {
+    let id = AccountId(account_id);
+    start_idle_watch(&app, &state, &id);
+    Ok(())
+}
+
+fn start_idle_watch(app: &AppHandle, state: &State<'_, AppState>, account_id: &AccountId) {
+    let mut idle = match state.idle.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    idle.start(
+        app.clone(),
+        Arc::clone(&state.db),
+        Arc::clone(&state.connection_status),
+        account_id.clone(),
+    );
+}
+
+use std::sync::Arc;

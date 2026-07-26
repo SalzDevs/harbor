@@ -96,3 +96,15 @@ export type AppInfo = {
   gmailOauthConfigured: boolean;
   outlookOauthConfigured: boolean;
 };
+
+export type ConnectionKind = "online" | "offline" | "reconnecting";
+
+export type ConnectionStatus = {
+  kind: ConnectionKind;
+  detail: string | null;
+};
+
+export type FolderMailUpdated = {
+  folderId: string;
+  accountId: string;
+};
