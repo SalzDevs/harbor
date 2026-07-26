@@ -1,0 +1,22 @@
+[package]
+name = "harbor-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Harbor desktop shell (Tauri)"
+default-run = "harbor-app"
+
+[lib]
+name = "harbor_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+harbor-core = { workspace = true }
+harbor-db = { workspace = true }
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }

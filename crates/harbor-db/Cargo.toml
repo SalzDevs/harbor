@@ -1,0 +1,10 @@
+[package]
+name = "harbor-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Harbor local store — SQLite schema and queries"
+
+[dependencies]
+harbor-core = { workspace = true }
+thiserror = { workspace = true }

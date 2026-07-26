@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/harbor-core",
+    "crates/harbor-db",
+    "src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/SalzDevs/harbor"
+
+[workspace.dependencies]
+harbor-core = { path = "crates/harbor-core" }
+harbor-db = { path = "crates/harbor-db" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
