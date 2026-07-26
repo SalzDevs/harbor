@@ -1,10 +1,18 @@
 //! Local persistence for Harbor. Schema and queries live here.
 
-use harbor_core::APP_NAME;
+mod accounts;
+mod error;
+mod paths;
+mod store;
 
-/// Placeholder until the account store lands.
+pub use accounts::AccountRepo;
+pub use error::{DbError, Result};
+pub use paths::{data_dir, database_path};
+pub use store::Db;
+
+/// Placeholder health check.
 pub fn db_status() -> String {
-    format!("{APP_NAME} db ready")
+    format!("{} db ready", harbor_core::APP_NAME)
 }
 
 #[cfg(test)]

@@ -43,6 +43,13 @@ Production build:
 npm run desktop:build
 ```
 
+## Data location
+
+SQLite lives in the OS app-data directory:
+
+- macOS: `~/Library/Application Support/Harbor/harbor.sqlite3`
+- Linux: `~/.local/share/harbor/harbor.sqlite3` (or `$XDG_DATA_HOME/harbor`)
+
 ## Design notes (v1)
 
 - Providers: Gmail + Outlook via OAuth2 only

@@ -1,15 +1,11 @@
 //! Pure mail domain types and logic. No Tauri, no SQLite.
 
-pub const APP_NAME: &str = "Harbor";
-pub const APP_ID: &str = "app.harbor.mail";
+pub mod account;
+pub mod paths;
+pub mod strings;
 
-/// User-facing English strings. Keep all UI copy here (or behind this module).
-pub mod strings {
-    pub const APP_TITLE: &str = "Harbor";
-    pub const EMPTY_SHELL_HEADING: &str = "Harbor";
-    pub const EMPTY_SHELL_BODY: &str = "Your mail will show up here.";
-    pub const CORE_PING_OK: &str = "harbor-core ready";
-}
+pub use account::{Account, AccountId, ParseProviderError, Provider};
+pub use paths::{APP_ID, APP_NAME};
 
 /// Placeholder health check used by the shell to prove the workspace links.
 pub fn core_status() -> &'static str {

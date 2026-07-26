@@ -8,3 +8,9 @@ description = "Harbor local store — SQLite schema and queries"
 [dependencies]
 harbor-core = { workspace = true }
 thiserror = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+directories = "6"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
