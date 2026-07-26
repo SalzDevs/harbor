@@ -8,18 +8,25 @@
     selectAccount,
     selectedAccountId,
   } from "$lib/accounts";
+  import { folderLabel, listFolders, syncFolders } from "$lib/folders";
   import { strings } from "$lib/strings";
-  import type { Account, AppInfo, Provider } from "$lib/types";
+  import type { Account, AppInfo, Folder, Provider } from "$lib/types";
 
   let info = $state<AppInfo | null>(null);
   let accounts = $state<Account[]>([]);
+  let folders = $state<Folder[]>([]);
   let activeId = $state<string | null>(null);
+  let activeFolderId = $state<string | null>(null);
   let error = $state<string | null>(null);
   let busy = $state(false);
   let signingIn = $state(false);
+  let syncingFolders = $state(false);
 
   const activeAccount = $derived(
     accounts.find((a) => a.id === activeId) ?? null,
+  );
+  const activeFolder = $derived(
+    folders.find((f) => f.id === activeFolderId) ?? null,
   );
 
   onMount(async () => {
@@ -36,8 +43,38 @@
         activeId = accounts[0].id;
         await selectAccount(activeId);
       }
+      if (activeId) {
+        await loadFolders(activeId, false);
+      } else {
+        folders = [];
+        activeFolderId = null;
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async function loadFolders(accountId: string, fromNetwork: boolean) {
+    syncingFolders = fromNetwork;
+    try {
+      if (fromNetwork) {
+        folders = await syncFolders(accountId);
+      } else {
+        folders = await listFolders(accountId);
+        if (folders.length === 0) {
+          syncingFolders = true;
+          folders = await syncFolders(accountId);
+        }
+      }
+      const inbox = folders.find((f) => f.role === "inbox");
+      activeFolderId = inbox?.id ?? folders[0]?.id ?? null;
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+      if (!fromNetwork) {
+        folders = await listFolders(accountId).catch(() => []);
+      }
+    } finally {
+      syncingFolders = false;
     }
   }
 
@@ -57,6 +94,7 @@
       const account = await addAccount(provider);
       accounts = await listAccounts();
       activeId = account.id;
+      await loadFolders(account.id, false);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -65,18 +103,25 @@
     }
   }
 
-  async function onSelect(id: string) {
+  async function onSelectAccount(id: string) {
     if (id === activeId) return;
     busy = true;
     error = null;
     try {
       await selectAccount(id);
       activeId = id;
+      await loadFolders(id, false);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
       busy = false;
     }
+  }
+
+  async function onSyncFolders() {
+    if (!activeId) return;
+    error = null;
+    await loadFolders(activeId, true);
   }
 </script>
 
@@ -93,7 +138,7 @@
             class="account-item"
             class:active={account.id === activeId}
             disabled={busy}
-            onclick={() => onSelect(account.id)}
+            onclick={() => onSelectAccount(account.id)}
           >
             <span class="provider"
               >{account.provider}
@@ -104,6 +149,37 @@
         {/each}
       {/if}
     </div>
+
+    {#if activeAccount}
+      <div class="pane-label row">
+        <span>{strings.folders}</span>
+        <button
+          type="button"
+          class="linkish"
+          disabled={busy || syncingFolders}
+          onclick={onSyncFolders}
+        >
+          {syncingFolders ? strings.syncingFolders : strings.syncFolders}
+        </button>
+      </div>
+      <div class="folder-list">
+        {#if folders.length === 0}
+          <p class="muted pad">{strings.noFolders}</p>
+        {:else}
+          {#each folders as folder (folder.id)}
+            <button
+              type="button"
+              class="folder-item"
+              class:active={folder.id === activeFolderId}
+              onclick={() => (activeFolderId = folder.id)}
+            >
+              {folderLabel(folder)}
+            </button>
+          {/each}
+        {/if}
+      </div>
+    {/if}
+
     <div class="add-row">
       <button type="button" class="btn" disabled={busy} onclick={() => onAdd("gmail")}>
         {strings.addGmail}
@@ -119,13 +195,17 @@
 
   <section class="pane list" aria-label="Messages">
     <div class="pane-label">
-      {#if activeAccount}
-        {strings.inbox}
+      {#if activeFolder}
+        {folderLabel(activeFolder)}
+      {:else if activeAccount}
+        {strings.selectAccount}
       {:else}
         {strings.selectAccount}
       {/if}
     </div>
-    {#if activeAccount}
+    {#if activeFolder}
+      <p class="muted pad">{activeFolder.imapName}</p>
+    {:else if activeAccount}
       <p class="muted pad">{accountLabel(activeAccount)}</p>
     {/if}
   </section>
@@ -133,7 +213,9 @@
   <main class="pane reading" aria-label="Reading">
     <div class="empty">
       <h1>{strings.emptyShellHeading}</h1>
-      {#if activeAccount}
+      {#if activeFolder}
+        <p>{folderLabel(activeFolder)} · {activeFolder.role}</p>
+      {:else if activeAccount}
         <p>
           {accountLabel(activeAccount)} · {activeAccount.provider} · {activeAccount.status}
         </p>
@@ -155,7 +237,7 @@
 <style>
   .shell {
     display: grid;
-    grid-template-columns: 240px 320px 1fr;
+    grid-template-columns: 260px 320px 1fr;
     height: 100vh;
     width: 100vw;
     background: var(--bg);
@@ -186,13 +268,50 @@
     flex-shrink: 0;
   }
 
+  .pane-label.row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    text-transform: none;
+    letter-spacing: normal;
+  }
+
+  .pane-label.row span {
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .linkish {
+    border: none;
+    background: transparent;
+    color: var(--accent);
+    font-size: 11px;
+    padding: 0;
+    text-transform: none;
+    letter-spacing: normal;
+    font-weight: 500;
+  }
+
+  .linkish:disabled {
+    opacity: 0.5;
+  }
+
   .account-list {
+    max-height: 30%;
+    overflow: auto;
+    padding: 8px;
+    flex-shrink: 0;
+  }
+
+  .folder-list {
     flex: 1;
     overflow: auto;
     padding: 8px;
   }
 
-  .account-item {
+  .account-item,
+  .folder-item {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
@@ -206,11 +325,18 @@
     text-align: left;
   }
 
-  .account-item:hover:not(:disabled) {
+  .folder-item {
+    font-size: 13px;
+    color: var(--text);
+  }
+
+  .account-item:hover:not(:disabled),
+  .folder-item:hover {
     background: var(--bg-elevated);
   }
 
-  .account-item.active {
+  .account-item.active,
+  .folder-item.active {
     background: var(--bg-elevated);
     border-color: var(--border);
   }

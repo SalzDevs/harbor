@@ -21,6 +21,8 @@ pub fn run() {
             commands::sign_in_gmail_account,
             commands::sign_in_outlook_account,
             commands::refresh_account_token,
+            commands::list_folders,
+            commands::sync_folders,
             commands::select_account,
             commands::selected_account_id,
         ])

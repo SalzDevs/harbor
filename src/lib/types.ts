@@ -11,6 +11,24 @@ export type Account = {
   createdAt: number;
 };
 
+export type FolderRole =
+  | "inbox"
+  | "sent"
+  | "drafts"
+  | "trash"
+  | "junk"
+  | "archive"
+  | "other";
+
+export type Folder = {
+  id: string;
+  accountId: string;
+  imapName: string;
+  delimiter: string | null;
+  role: FolderRole;
+  name: string;
+};
+
 export type AppInfo = {
   name: string;
   core: string;

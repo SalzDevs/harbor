@@ -2,12 +2,14 @@
 
 mod accounts;
 mod error;
+mod folders;
 mod paths;
 mod store;
 mod tokens;
 
 pub use accounts::AccountRepo;
 pub use error::{DbError, Result};
+pub use folders::FolderRepo;
 pub use paths::{data_dir, database_path};
 pub use store::Db;
 pub use tokens::TokenRepo;

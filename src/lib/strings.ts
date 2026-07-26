@@ -13,6 +13,10 @@ export const strings = {
   selectAccount: "Select an account",
   accounts: "Accounts",
   inbox: "Inbox",
+  folders: "Folders",
+  syncFolders: "Sync folders",
+  syncingFolders: "Syncing folders…",
+  noFolders: "No folders yet — sync to load mailboxes.",
   gmailOauthNotConfigured:
     "Gmail OAuth is not configured. Set HARBOR_GMAIL_CLIENT_ID or add oauth.json in the data directory.",
   outlookOauthNotConfigured:

@@ -1,11 +1,14 @@
 //! Pure mail domain types and logic. No Tauri, no SQLite.
 
 pub mod account;
+pub mod folder;
+pub mod imap;
 pub mod oauth;
 pub mod paths;
 pub mod strings;
 
 pub use account::{Account, AccountId, AccountStatus, ParseProviderError, Provider};
+pub use folder::{Folder, FolderId, FolderRole};
 pub use paths::{APP_ID, APP_NAME};
 
 /// Placeholder health check used by the shell to prove the workspace links.

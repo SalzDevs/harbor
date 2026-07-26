@@ -4,8 +4,6 @@ use rusqlite::Connection;
 
 use crate::error::Result;
 
-const SCHEMA_VERSION: i32 = 2;
-
 const MIGRATION_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY NOT NULL
@@ -37,6 +35,20 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
     scope TEXT,
     updated_at INTEGER NOT NULL
 );
+"#;
+
+const MIGRATION_V3: &str = r#"
+CREATE TABLE IF NOT EXISTS folders (
+    id TEXT PRIMARY KEY NOT NULL,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    imap_name TEXT NOT NULL,
+    delimiter TEXT,
+    role TEXT NOT NULL,
+    name TEXT NOT NULL,
+    UNIQUE(account_id, imap_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_folders_account ON folders(account_id);
 "#;
 
 pub struct Db {
@@ -93,15 +105,9 @@ impl Db {
 
         if current < 1 {
             self.conn.execute_batch(MIGRATION_V1)?;
-            self.conn.execute(
-                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (1)",
-                [],
-            )?;
+            self.mark_version(1)?;
         }
         if current < 2 {
-            // Fresh DB after v1 batch already has accounts without status if we ran v1 create.
-            // For brand-new DBs, v1 creates accounts without status — apply v2.
-            // If status column already exists (re-run), ignore.
             let has_status: bool = self.conn.query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('accounts') WHERE name = 'status'",
                 [],
@@ -122,13 +128,21 @@ impl Db {
                     );",
                 )?;
             }
-            self.conn.execute(
-                "INSERT OR IGNORE INTO schema_migrations (version) VALUES (2)",
-                [],
-            )?;
+            self.mark_version(2)?;
+        }
+        if current < 3 {
+            self.conn.execute_batch(MIGRATION_V3)?;
+            self.mark_version(3)?;
         }
 
-        let _ = SCHEMA_VERSION;
+        Ok(())
+    }
+
+    fn mark_version(&self, version: i32) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
+            [version],
+        )?;
         Ok(())
     }
 

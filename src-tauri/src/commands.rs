@@ -1,9 +1,10 @@
+use harbor_core::imap::list_remote_folders;
 use harbor_core::oauth::{
     gmail_token_url, load_oauth_config, outlook_token_url, refresh_access_token, sign_in_gmail,
-    sign_in_outlook, OAuthClientConfig, TokenRefreshRequest,
+    sign_in_outlook, OAuthClientConfig, OAuthTokenSet, TokenRefreshRequest,
 };
-use harbor_core::{strings, Account, AccountId, Provider};
-use harbor_db::{AccountRepo, TokenRepo};
+use harbor_core::{strings, Account, AccountId, Folder, Provider};
+use harbor_db::{AccountRepo, FolderRepo, TokenRepo};
 use tauri::State;
 
 use crate::state::AppState;
@@ -52,7 +53,15 @@ pub fn sign_in_gmail_account(state: State<'_, AppState>) -> Result<Account, Stri
     })?;
 
     let signed = sign_in_gmail(&client).map_err(|e| e.to_string())?;
-    persist_connected(state, Provider::Gmail, signed.email, signed.display_name, signed.tokens)
+    let account = persist_connected(
+        &state,
+        Provider::Gmail,
+        signed.email,
+        signed.display_name,
+        signed.tokens,
+    )?;
+    let _ = sync_folders_for_account(&state, &account.id);
+    Ok(account)
 }
 
 /// Full Outlook/Microsoft OAuth2 + PKCE. No account is written on failure.
@@ -68,21 +77,23 @@ pub fn sign_in_outlook_account(state: State<'_, AppState>) -> Result<Account, St
     })?;
 
     let signed = sign_in_outlook(&client).map_err(|e| e.to_string())?;
-    persist_connected(
-        state,
+    let account = persist_connected(
+        &state,
         Provider::Outlook,
         signed.email,
         signed.display_name,
         signed.tokens,
-    )
+    )?;
+    let _ = sync_folders_for_account(&state, &account.id);
+    Ok(account)
 }
 
 fn persist_connected(
-    state: State<'_, AppState>,
+    state: &State<'_, AppState>,
     provider: Provider,
     email: String,
     display_name: Option<String>,
-    tokens: harbor_core::oauth::OAuthTokenSet,
+    tokens: OAuthTokenSet,
 ) -> Result<Account, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let account = db
@@ -100,16 +111,35 @@ pub fn refresh_account_token(
     account_id: String,
 ) -> Result<bool, String> {
     let id = AccountId(account_id);
+    ensure_fresh_access_token(&state, &id).map(|r| r.refreshed)
+}
+
+struct FreshToken {
+    access_token: String,
+    refreshed: bool,
+}
+
+fn ensure_fresh_access_token(
+    state: &State<'_, AppState>,
+    id: &AccountId,
+) -> Result<FreshToken, String> {
     let data_dir = harbor_db::data_dir();
     let cfg = load_oauth_config(&data_dir).map_err(|e| e.to_string())?;
 
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let account = db
-        .get_account(&id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("account not found: {}", id.as_str()))?;
+    let (provider, tokens) = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let account = db
+            .get_account(id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("account not found: {}", id.as_str()))?;
+        let tokens = db
+            .load_tokens(id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "no tokens stored for account".to_string())?;
+        (account.provider, tokens)
+    };
 
-    let (token_url, client): (&str, OAuthClientConfig) = match account.provider {
+    let (token_url, client): (&str, OAuthClientConfig) = match provider {
         Provider::Gmail => (
             gmail_token_url(),
             cfg.gmail
@@ -122,24 +152,20 @@ pub fn refresh_account_token(
         ),
     };
 
-    let tokens = db
-        .load_tokens(&id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "no tokens stored for account".to_string())?;
+    if let Some(exp) = tokens.expires_at {
+        let now = now_unix();
+        if exp > now + 60 {
+            return Ok(FreshToken {
+                access_token: tokens.access_token,
+                refreshed: false,
+            });
+        }
+    }
+
     let refresh = tokens
         .refresh_token
         .as_deref()
         .ok_or_else(|| "no refresh token stored".to_string())?;
-
-    if let Some(exp) = tokens.expires_at {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        if exp > now + 60 {
-            return Ok(false);
-        }
-    }
 
     let refreshed = refresh_access_token(TokenRefreshRequest {
         token_url,
@@ -147,8 +173,67 @@ pub fn refresh_account_token(
         refresh_token: refresh,
     })
     .map_err(|e| e.to_string())?;
-    db.save_tokens(&id, &refreshed).map_err(|e| e.to_string())?;
-    Ok(true)
+
+    {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.save_tokens(id, &refreshed).map_err(|e| e.to_string())?;
+    }
+
+    Ok(FreshToken {
+        access_token: refreshed.access_token,
+        refreshed: true,
+    })
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+pub fn list_folders(
+    state: State<'_, AppState>,
+    account_id: String,
+) -> Result<Vec<Folder>, String> {
+    let id = AccountId(account_id);
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.list_folders(&id).map_err(|e| e.to_string())
+}
+
+/// IMAP XOAUTH2 connect + LIST, persist folders for the account.
+#[tauri::command]
+pub fn sync_folders(state: State<'_, AppState>, account_id: String) -> Result<Vec<Folder>, String> {
+    let id = AccountId(account_id);
+    sync_folders_for_account(&state, &id)
+}
+
+fn sync_folders_for_account(
+    state: &State<'_, AppState>,
+    id: &AccountId,
+) -> Result<Vec<Folder>, String> {
+    let (provider, email) = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let account = db
+            .get_account(id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("account not found: {}", id.as_str()))?;
+        if account.status != harbor_core::AccountStatus::Connected {
+            return Err("account is not connected".into());
+        }
+        let email = account
+            .email
+            .ok_or_else(|| "account has no email".to_string())?;
+        (account.provider, email)
+    };
+
+    let fresh = ensure_fresh_access_token(state, id)?;
+    let remote =
+        list_remote_folders(provider, &email, &fresh.access_token).map_err(|e| e.to_string())?;
+
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.replace_folders(id, &remote).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
