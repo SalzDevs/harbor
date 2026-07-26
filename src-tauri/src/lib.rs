@@ -18,9 +18,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
             commands::list_accounts,
-            commands::add_account,
             commands::sign_in_gmail_account,
-            commands::refresh_gmail_token,
+            commands::sign_in_outlook_account,
+            commands::refresh_account_token,
             commands::select_account,
             commands::selected_account_id,
         ])

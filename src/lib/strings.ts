@@ -13,6 +13,8 @@ export const strings = {
   selectAccount: "Select an account",
   accounts: "Accounts",
   inbox: "Inbox",
-  oauthNotConfigured:
+  gmailOauthNotConfigured:
     "Gmail OAuth is not configured. Set HARBOR_GMAIL_CLIENT_ID or add oauth.json in the data directory.",
+  outlookOauthNotConfigured:
+    "Outlook OAuth is not configured. Set HARBOR_OUTLOOK_CLIENT_ID or add oauth.json in the data directory.",
 } as const;

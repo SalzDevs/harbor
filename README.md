@@ -50,11 +50,13 @@ SQLite lives in the OS app-data directory:
 - macOS: `~/Library/Application Support/Harbor/harbor.sqlite3`
 - Linux: `~/.local/share/harbor/harbor.sqlite3` (or `$XDG_DATA_HOME/harbor`)
 
-## Gmail OAuth
+## OAuth setup
 
-Create a Google Cloud **Desktop** OAuth client. Add redirect URI `http://127.0.0.1` (loopback; Harbor picks an ephemeral port).
+Copy `oauth.json.example` to the data dir as `oauth.json`, or use env vars. Harbor uses loopback redirects (`http://127.0.0.1:<ephemeral>/oauth/callback`).
 
-Either:
+### Gmail
+
+Google Cloud **Desktop** OAuth client.
 
 ```bash
 export HARBOR_GMAIL_CLIENT_ID="….apps.googleusercontent.com"
@@ -62,9 +64,19 @@ export HARBOR_GMAIL_CLIENT_ID="….apps.googleusercontent.com"
 export HARBOR_GMAIL_CLIENT_SECRET="…"
 ```
 
-Or copy `oauth.json.example` to the data dir as `oauth.json` (see paths above).
+Scopes: `openid email profile https://mail.google.com/`
 
-Scopes used: `openid email profile https://mail.google.com/` (IMAP/SMTP XOAUTH2).
+### Outlook
+
+Azure app registration (public client / mobile & desktop). Enable allow public client flows. Add redirect `http://127.0.0.1` (any port).
+
+```bash
+export HARBOR_OUTLOOK_CLIENT_ID="…"
+# optional:
+export HARBOR_OUTLOOK_CLIENT_SECRET="…"
+```
+
+Scopes: `offline_access openid email profile User.Read` plus Outlook IMAP/SMTP (`IMAP.AccessAsUser.All`, `SMTP.Send`).
 
 ## Design notes (v1)
 

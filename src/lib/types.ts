@@ -17,4 +17,5 @@ export type AppInfo = {
   db: string;
   dataDir: string;
   gmailOauthConfigured: boolean;
+  outlookOauthConfigured: boolean;
 };

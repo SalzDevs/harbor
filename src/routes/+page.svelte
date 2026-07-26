@@ -43,11 +43,15 @@
 
   async function onAdd(provider: Provider) {
     if (provider === "gmail" && info && !info.gmailOauthConfigured) {
-      error = strings.oauthNotConfigured;
+      error = strings.gmailOauthNotConfigured;
+      return;
+    }
+    if (provider === "outlook" && info && !info.outlookOauthConfigured) {
+      error = strings.outlookOauthNotConfigured;
       return;
     }
     busy = true;
-    signingIn = provider === "gmail";
+    signingIn = true;
     error = null;
     try {
       const account = await addAccount(provider);

@@ -16,7 +16,7 @@ export async function addAccount(provider: Provider): Promise<Account> {
   if (provider === "gmail") {
     return invoke<Account>("sign_in_gmail_account");
   }
-  return invoke<Account>("add_account", { provider });
+  return invoke<Account>("sign_in_outlook_account");
 }
 
 export async function selectAccount(accountId: string): Promise<void> {

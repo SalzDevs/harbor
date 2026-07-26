@@ -2,11 +2,14 @@
 
 mod config;
 mod gmail;
+mod loopback;
+mod outlook;
 mod pkce;
 mod tokens;
 
 pub use config::{load_oauth_config, OAuthAppConfig, OAuthClientConfig};
 pub use gmail::{gmail_token_url, sign_in_gmail};
+pub use outlook::{outlook_token_url, sign_in_outlook};
 pub use tokens::{refresh_access_token, OAuthTokenSet, TokenRefreshRequest};
 
 use thiserror::Error;

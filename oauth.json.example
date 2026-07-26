@@ -2,5 +2,9 @@
   "gmail": {
     "clientId": "YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com",
     "clientSecret": "optional-for-public-native-clients"
+  },
+  "outlook": {
+    "clientId": "YOUR_AZURE_APP_CLIENT_ID",
+    "clientSecret": "optional-for-public-native-clients"
   }
 }
