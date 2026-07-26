@@ -11,14 +11,18 @@
     messages: MessageListItem[];
     total: number;
     syncProgress: FolderSyncProgress | null;
+    selectedId?: string | null;
     emptyLabel?: string;
+    onselect?: (msg: MessageListItem) => void;
   };
 
   let {
     messages,
     total,
     syncProgress,
+    selectedId = null,
     emptyLabel = strings.noMessages,
+    onselect,
   }: Props = $props();
 
   const ROW = 56;
@@ -80,14 +84,20 @@
       <div class="virtual" style="height: {totalSize}px;">
         <div class="window" style="transform: translateY({offsetY}px);">
           {#each visible as msg (msg.id + ":" + msg.uid)}
-            <div class="row" class:unread={!msg.flags.seen}>
+            <button
+              type="button"
+              class="row"
+              class:unread={!msg.flags.seen}
+              class:active={msg.id === selectedId}
+              onclick={() => onselect?.(msg)}
+            >
               <div class="from">{messageFrom(msg)}</div>
               <div class="subject">
                 {#if msg.flags.flagged}<span class="flag">★</span>{/if}
                 {messageSubject(msg)}
               </div>
               <div class="date">{formatMessageDate(msg.dateUnix)}</div>
-            </div>
+            </button>
           {/each}
         </div>
       </div>
@@ -134,19 +144,31 @@
   }
 
   .row {
+    width: 100%;
     height: 56px;
     padding: 8px 14px;
+    border: none;
     border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
     display: grid;
     grid-template-columns: 1fr auto;
     grid-template-rows: auto auto;
     column-gap: 12px;
     row-gap: 2px;
     box-sizing: border-box;
+    text-align: left;
+    color: inherit;
+    cursor: pointer;
   }
 
   .row:hover {
     background: var(--bg-elevated);
+  }
+
+  .row.active {
+    background: var(--bg-elevated);
+    box-shadow: inset 2px 0 0 var(--accent);
   }
 
   .row.unread .from,

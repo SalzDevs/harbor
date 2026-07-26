@@ -96,6 +96,16 @@ CREATE TABLE IF NOT EXISTS folder_sync_state (
 );
 "#;
 
+const MIGRATION_V5: &str = r#"
+CREATE TABLE IF NOT EXISTS message_bodies (
+    message_id TEXT PRIMARY KEY NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    text_plain TEXT,
+    text_html TEXT,
+    text_html_safe TEXT,
+    fetched_at INTEGER NOT NULL
+);
+"#;
+
 pub struct Db {
     conn: Connection,
     path: PathBuf,
@@ -182,6 +192,10 @@ impl Db {
         if current < 4 {
             self.conn.execute_batch(MIGRATION_V4)?;
             self.mark_version(4)?;
+        }
+        if current < 5 {
+            self.conn.execute_batch(MIGRATION_V5)?;
+            self.mark_version(5)?;
         }
 
         Ok(())

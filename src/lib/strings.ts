@@ -21,6 +21,12 @@ export const strings = {
   selectFolder: "Select a folder",
   syncingMessages: "Syncing…",
   messages: "messages",
+  loadingMessage: "Loading message…",
+  loadImages: "Load images",
+  imagesBlocked: "Remote images are blocked.",
+  from: "From",
+  to: "To",
+  date: "Date",
   gmailOauthNotConfigured:
     "Gmail OAuth is not configured. Set HARBOR_GMAIL_CLIENT_ID or add oauth.json in the data directory.",
   outlookOauthNotConfigured:

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { MessageListItem, MessagePage } from "./types";
+import type { MessageDetail, MessageListItem, MessagePage } from "./types";
 
 export function messageFrom(msg: MessageListItem): string {
   if (msg.fromName) return msg.fromName;
@@ -47,4 +47,11 @@ export async function syncFolderHeaders(folderId: string): Promise<{
   total: number;
 }> {
   return invoke("sync_folder_headers", { folderId });
+}
+
+export async function openMessage(
+  folderId: string,
+  messageId: string,
+): Promise<MessageDetail> {
+  return invoke<MessageDetail>("open_message", { folderId, messageId });
 }

@@ -156,6 +156,38 @@ pub fn fetch_headers_for_uids(session: &mut Session, uids: &[u32]) -> Result<Vec
     Ok(out)
 }
 
+/// Fetch full RFC822 body for one UID (BODY.PEEK[] so \Seen is not set by FETCH alone).
+pub fn fetch_raw_message(session: &mut Session, uid: u32) -> Result<Vec<u8>> {
+    let fetches = session.uid_fetch(uid.to_string(), "BODY.PEEK[]")?;
+    for fetch in fetches.iter() {
+        if let Some(bytes) = fetch.body() {
+            return Ok(bytes.to_vec());
+        }
+    }
+    // Some servers only fill RFC822
+    let fetches = session.uid_fetch(uid.to_string(), "RFC822")?;
+    for fetch in fetches.iter() {
+        if let Some(bytes) = fetch.body() {
+            return Ok(bytes.to_vec());
+        }
+    }
+    Err(ImapError::Other(format!("no body returned for uid {uid}")))
+}
+
+/// Connect, SELECT, fetch one body, logout.
+pub fn fetch_message_bytes(
+    provider: Provider,
+    email: &str,
+    access_token: &str,
+    imap_name: &str,
+    uid: u32,
+) -> Result<Vec<u8>> {
+    let (mut session, _) = select_mailbox(provider, email, access_token, imap_name)?;
+    let bytes = fetch_raw_message(&mut session, uid)?;
+    logout(session);
+    Ok(bytes)
+}
+
 pub fn logout(session: Session) {
     let mut session = session;
     let _ = session.logout();

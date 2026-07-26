@@ -10,14 +10,16 @@
     selectedAccountId,
   } from "$lib/accounts";
   import MessageList from "$lib/components/MessageList.svelte";
+  import ReadingPane from "$lib/components/ReadingPane.svelte";
   import { folderLabel, listFolders, syncFolders } from "$lib/folders";
-  import { listMessages, syncFolderHeaders } from "$lib/messages";
+  import { listMessages, openMessage, syncFolderHeaders } from "$lib/messages";
   import { strings } from "$lib/strings";
   import type {
     Account,
     AppInfo,
     Folder,
     FolderSyncProgress,
+    MessageDetail,
     MessageListItem,
     Provider,
   } from "$lib/types";
@@ -29,12 +31,17 @@
   let messageTotal = $state(0);
   let activeId = $state<string | null>(null);
   let activeFolderId = $state<string | null>(null);
+  let selectedMessageId = $state<string | null>(null);
+  let openDetail = $state<MessageDetail | null>(null);
+  let openLoading = $state(false);
+  let openError = $state<string | null>(null);
   let error = $state<string | null>(null);
   let busy = $state(false);
   let signingIn = $state(false);
   let syncingFolders = $state(false);
   let syncProgress = $state<FolderSyncProgress | null>(null);
   let headerSyncToken = 0;
+  let openToken = 0;
 
   let unlistenProgress: UnlistenFn | null = null;
 
@@ -78,6 +85,7 @@
         activeFolderId = null;
         messages = [];
         messageTotal = 0;
+        clearOpen();
       }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -104,6 +112,7 @@
         activeFolderId = null;
         messages = [];
         messageTotal = 0;
+        clearOpen();
       }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -115,9 +124,17 @@
     }
   }
 
+  function clearOpen() {
+    selectedMessageId = null;
+    openDetail = null;
+    openLoading = false;
+    openError = null;
+  }
+
   async function selectFolder(folderId: string) {
     activeFolderId = folderId;
     syncProgress = null;
+    clearOpen();
     // First paint from local DB only.
     try {
       const page = await listMessages(folderId, 300, 0);
@@ -192,6 +209,25 @@
     if (!activeId) return;
     error = null;
     await loadFolders(activeId, true);
+  }
+
+  async function onSelectMessage(msg: MessageListItem) {
+    if (!activeFolderId) return;
+    selectedMessageId = msg.id;
+    openLoading = true;
+    openError = null;
+    openDetail = null;
+    const token = ++openToken;
+    try {
+      const detail = await openMessage(activeFolderId, msg.id);
+      if (token !== openToken) return;
+      openDetail = detail;
+    } catch (e) {
+      if (token !== openToken) return;
+      openError = e instanceof Error ? e.message : String(e);
+    } finally {
+      if (token === openToken) openLoading = false;
+    }
   }
 </script>
 
@@ -272,33 +308,23 @@
       {/if}
     </div>
     {#if activeFolder}
-      <MessageList {messages} total={messageTotal} {syncProgress} />
+      <MessageList
+        {messages}
+        total={messageTotal}
+        {syncProgress}
+        selectedId={selectedMessageId}
+        onselect={onSelectMessage}
+      />
     {:else if activeAccount}
       <p class="muted pad">{accountLabel(activeAccount)}</p>
+    {/if}
+    {#if error}
+      <p class="status error pad">{error}</p>
     {/if}
   </section>
 
   <main class="pane reading" aria-label="Reading">
-    <div class="empty">
-      <h1>{strings.emptyShellHeading}</h1>
-      {#if activeFolder}
-        <p>{strings.emptyShellBody}</p>
-      {:else if activeAccount}
-        <p>
-          {accountLabel(activeAccount)} · {activeAccount.provider} · {activeAccount.status}
-        </p>
-      {:else}
-        <p>{strings.emptyShellBody}</p>
-        <p class="status">{strings.addAccount}</p>
-      {/if}
-      {#if error}
-        <p class="status error">{error}</p>
-      {:else if info}
-        <p class="status subtle">{info.dataDir}</p>
-      {:else}
-        <p class="status">{strings.statusLoading}</p>
-      {/if}
-    </div>
+    <ReadingPane message={openDetail} loading={openLoading} error={openError} />
   </main>
 </div>
 
@@ -453,26 +479,7 @@
   }
 
   .reading {
-    align-items: center;
-    justify-content: center;
-  }
-
-  .empty {
-    text-align: center;
-    padding: 32px;
-    max-width: 420px;
-  }
-
-  .empty h1 {
-    margin: 0 0 8px;
-    font-size: 28px;
-    font-weight: 600;
-    letter-spacing: -0.02em;
-  }
-
-  .empty p {
-    margin: 0;
-    color: var(--text-muted);
+    min-height: 0;
   }
 
   .pad {
@@ -485,13 +492,8 @@
   }
 
   .status {
-    margin-top: 16px !important;
     font-size: 12px;
     word-break: break-all;
-  }
-
-  .subtle {
-    opacity: 0.7;
   }
 
   .error {

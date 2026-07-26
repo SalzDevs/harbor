@@ -1,6 +1,6 @@
 use harbor_core::{
-    AccountId, FetchedHeader, FolderId, FolderSyncState, MessageFlags, MessageId, MessageListItem,
-    MessagePage,
+    AccountId, FetchedHeader, FolderId, FolderSyncState, MessageBody, MessageDetail, MessageFlags,
+    MessageId, MessageListItem, MessageLocation, MessagePage,
 };
 use rusqlite::params;
 use uuid::Uuid;
@@ -32,6 +32,22 @@ pub trait MessageRepo {
     fn set_folder_sync_state(&self, state: &FolderSyncState) -> Result<()>;
 
     fn local_uids_for_folder(&self, folder_id: &FolderId) -> Result<Vec<u32>>;
+
+    fn get_message_location(
+        &self,
+        folder_id: &FolderId,
+        message_id: &MessageId,
+    ) -> Result<Option<MessageLocation>>;
+
+    fn get_message_body(&self, message_id: &MessageId) -> Result<Option<MessageBody>>;
+
+    fn save_message_body(&self, message_id: &MessageId, body: &MessageBody) -> Result<()>;
+
+    fn get_message_detail(
+        &self,
+        folder_id: &FolderId,
+        message_id: &MessageId,
+    ) -> Result<Option<MessageDetail>>;
 }
 
 impl MessageRepo for Db {
@@ -191,6 +207,118 @@ impl MessageRepo for Db {
             uids.push(row?);
         }
         Ok(uids)
+    }
+
+    fn get_message_location(
+        &self,
+        folder_id: &FolderId,
+        message_id: &MessageId,
+    ) -> Result<Option<MessageLocation>> {
+        let mut stmt = self.conn().prepare(
+            "SELECT m.account_id, mf.folder_id, m.id, mf.uid, f.imap_name
+             FROM messages m
+             JOIN message_folders mf ON mf.message_id = m.id
+             JOIN folders f ON f.id = mf.folder_id
+             WHERE mf.folder_id = ?1 AND m.id = ?2",
+        )?;
+        let mut rows = stmt.query(params![folder_id.as_str(), message_id.as_str()])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(MessageLocation {
+                account_id: AccountId(row.get(0)?),
+                folder_id: FolderId(row.get(1)?),
+                message_id: MessageId(row.get(2)?),
+                uid: row.get::<_, i64>(3)? as u32,
+                imap_name: row.get(4)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn get_message_body(&self, message_id: &MessageId) -> Result<Option<MessageBody>> {
+        let mut stmt = self.conn().prepare(
+            "SELECT text_plain, text_html, text_html_safe, fetched_at
+             FROM message_bodies WHERE message_id = ?1",
+        )?;
+        let mut rows = stmt.query([message_id.as_str()])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(MessageBody {
+                text_plain: row.get(0)?,
+                text_html: row.get(1)?,
+                text_html_safe: row.get(2)?,
+                fetched_at: row.get(3)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn save_message_body(&self, message_id: &MessageId, body: &MessageBody) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO message_bodies (message_id, text_plain, text_html, text_html_safe, fetched_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(message_id) DO UPDATE SET
+               text_plain = excluded.text_plain,
+               text_html = excluded.text_html,
+               text_html_safe = excluded.text_html_safe,
+               fetched_at = excluded.fetched_at",
+            params![
+                message_id.as_str(),
+                body.text_plain,
+                body.text_html,
+                body.text_html_safe,
+                body.fetched_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn get_message_detail(
+        &self,
+        folder_id: &FolderId,
+        message_id: &MessageId,
+    ) -> Result<Option<MessageDetail>> {
+        let mut stmt = self.conn().prepare(
+            "SELECT m.id, m.account_id, mf.folder_id, mf.uid, m.rfc_message_id,
+                    m.subject, m.from_address, m.from_name, m.to_list, m.date_unix, m.size,
+                    m.is_seen, m.is_flagged, m.is_answered, m.is_draft
+             FROM messages m
+             JOIN message_folders mf ON mf.message_id = m.id
+             WHERE mf.folder_id = ?1 AND m.id = ?2",
+        )?;
+        let mut rows = stmt.query(params![folder_id.as_str(), message_id.as_str()])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let list = map_list_item(row)?;
+        let body = self.get_message_body(message_id)?.unwrap_or(MessageBody {
+            text_plain: None,
+            text_html: None,
+            text_html_safe: None,
+            fetched_at: 0,
+        });
+        let has_remote = body
+            .text_html_safe
+            .as_deref()
+            .or(body.text_html.as_deref())
+            .map(harbor_core::html_has_remote_images)
+            .unwrap_or(false);
+        Ok(Some(MessageDetail {
+            id: list.id,
+            account_id: list.account_id,
+            folder_id: list.folder_id,
+            uid: list.uid,
+            rfc_message_id: list.rfc_message_id,
+            subject: list.subject,
+            from_address: list.from_address,
+            from_name: list.from_name,
+            to_list: list.to_list,
+            date_unix: list.date_unix,
+            size: list.size,
+            flags: list.flags,
+            body,
+            has_remote_images: has_remote,
+        }))
     }
 }
 
@@ -433,5 +561,29 @@ mod tests {
         let loaded = db.get_folder_sync_state(&inbox).unwrap().unwrap();
         assert_eq!(loaded.uidvalidity, 99);
         assert_eq!(loaded.last_uid, 42);
+    }
+
+    #[test]
+    fn body_cache_roundtrip() {
+        let (db, account_id, inbox, _) = setup2();
+        db.upsert_fetched_headers(&account_id, &inbox, &[header(1, Some("a"), "x", 1)])
+            .unwrap();
+        let page = db.list_messages(&inbox, 10, 0).unwrap();
+        let mid = page.messages[0].id.clone();
+        assert!(db.get_message_body(&mid).unwrap().is_none());
+        let body = MessageBody {
+            text_plain: Some("hello".into()),
+            text_html: Some("<p>hello</p>".into()),
+            text_html_safe: Some("<p>hello</p>".into()),
+            fetched_at: 99,
+        };
+        db.save_message_body(&mid, &body).unwrap();
+        let loaded = db.get_message_body(&mid).unwrap().unwrap();
+        assert_eq!(loaded.text_plain.as_deref(), Some("hello"));
+        let detail = db.get_message_detail(&inbox, &mid).unwrap().unwrap();
+        assert_eq!(detail.body.text_plain.as_deref(), Some("hello"));
+        let loc = db.get_message_location(&inbox, &mid).unwrap().unwrap();
+        assert_eq!(loc.uid, 1);
+        assert_eq!(loc.imap_name, "INBOX");
     }
 }

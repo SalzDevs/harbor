@@ -1,14 +1,14 @@
 use harbor_core::imap::{
-    fetch_headers_for_uids, list_remote_folders, logout, search_all_uids, search_uids_after,
-    select_mailbox,
+    fetch_headers_for_uids, fetch_message_bytes, list_remote_folders, logout, search_all_uids,
+    search_uids_after, select_mailbox,
 };
 use harbor_core::oauth::{
     gmail_token_url, load_oauth_config, outlook_token_url, refresh_access_token, sign_in_gmail,
     sign_in_outlook, OAuthClientConfig, OAuthTokenSet, TokenRefreshRequest,
 };
 use harbor_core::{
-    strings, Account, AccountId, Folder, FolderId, FolderSyncProgress, FolderSyncResult,
-    FolderSyncState, MessagePage, Provider,
+    parse_message_bytes, strings, Account, AccountId, Folder, FolderId, FolderSyncProgress,
+    FolderSyncResult, FolderSyncState, MessageDetail, MessageId, MessagePage, Provider,
 };
 use harbor_db::{AccountRepo, FolderRepo, MessageRepo, TokenRepo};
 use tauri::{AppHandle, Emitter, State};
@@ -368,6 +368,63 @@ pub fn sync_folder_headers(
         fetched,
         total,
     })
+}
+
+/// Open a message: return cached body or FETCH + parse + cache, then detail.
+#[tauri::command]
+pub fn open_message(
+    state: State<'_, AppState>,
+    folder_id: String,
+    message_id: String,
+) -> Result<MessageDetail, String> {
+    let folder_id = FolderId(folder_id);
+    let message_id = MessageId(message_id);
+
+    let location = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.get_message_location(&folder_id, &message_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "message not found in folder".to_string())?
+    };
+
+    let needs_fetch = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.get_message_body(&message_id)
+            .map_err(|e| e.to_string())?
+            .is_none()
+    };
+
+    if needs_fetch {
+        let (provider, email) = {
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            let account = db
+                .get_account(&location.account_id)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "account not found".to_string())?;
+            let email = account
+                .email
+                .ok_or_else(|| "account has no email".to_string())?;
+            (account.provider, email)
+        };
+        let fresh = ensure_fresh_access_token(&state, &location.account_id)?;
+        let raw = fetch_message_bytes(
+            provider,
+            &email,
+            &fresh.access_token,
+            &location.imap_name,
+            location.uid,
+        )
+        .map_err(|e| e.to_string())?;
+        let body = parse_message_bytes(&raw);
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.save_message_body(&message_id, &body)
+            .map_err(|e| e.to_string())?;
+    }
+
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.get_message_detail(&folder_id, &message_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "message not found".to_string())
 }
 
 #[tauri::command]

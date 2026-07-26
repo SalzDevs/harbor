@@ -20,6 +20,8 @@ imap = "2"
 imap-proto = "0.10"
 native-tls = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+mail-parser = "0.9"
+ammonia = "4"
 
 [dev-dependencies]
 tempfile = "3"

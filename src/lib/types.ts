@@ -51,6 +51,30 @@ export type MessageListItem = {
   flags: MessageFlags;
 };
 
+export type MessageBody = {
+  textPlain: string | null;
+  textHtml: string | null;
+  textHtmlSafe: string | null;
+  fetchedAt: number;
+};
+
+export type MessageDetail = {
+  id: string;
+  accountId: string;
+  folderId: string;
+  uid: number;
+  rfcMessageId: string | null;
+  subject: string;
+  fromAddress: string | null;
+  fromName: string | null;
+  toList: string | null;
+  dateUnix: number;
+  size: number | null;
+  flags: MessageFlags;
+  body: MessageBody;
+  hasRemoteImages: boolean;
+};
+
 export type MessagePage = {
   messages: MessageListItem[];
   total: number;
