@@ -8,8 +8,11 @@ export const strings = {
   addAccount: "Add account",
   addGmail: "Add Gmail",
   addOutlook: "Add Outlook",
+  signingIn: "Waiting for browser sign-in…",
   noAccounts: "No accounts yet",
   selectAccount: "Select an account",
   accounts: "Accounts",
   inbox: "Inbox",
+  oauthNotConfigured:
+    "Gmail OAuth is not configured. Set HARBOR_GMAIL_CLIENT_ID or add oauth.json in the data directory.",
 } as const;

@@ -5,7 +5,7 @@ export function accountLabel(account: Account): string {
   if (account.email) return account.email;
   if (account.displayName) return account.displayName;
   const name = account.provider === "gmail" ? "Gmail" : "Outlook";
-  return `${name} (stub)`;
+  return `${name} (${account.status})`;
 }
 
 export async function listAccounts(): Promise<Account[]> {
@@ -13,6 +13,9 @@ export async function listAccounts(): Promise<Account[]> {
 }
 
 export async function addAccount(provider: Provider): Promise<Account> {
+  if (provider === "gmail") {
+    return invoke<Account>("sign_in_gmail_account");
+  }
   return invoke<Account>("add_account", { provider });
 }
 

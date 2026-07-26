@@ -19,6 +19,8 @@ pub fn run() {
             commands::app_info,
             commands::list_accounts,
             commands::add_account,
+            commands::sign_in_gmail_account,
+            commands::refresh_gmail_token,
             commands::select_account,
             commands::selected_account_id,
         ])

@@ -64,11 +64,42 @@ impl FromStr for Provider {
 #[error("unknown provider: {0}")]
 pub struct ParseProviderError(pub String);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AccountStatus {
+    /// Local placeholder without OAuth (e.g. Outlook until OAuth lands).
+    Stub,
+    /// OAuth completed; tokens stored.
+    Connected,
+}
+
+impl AccountStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stub => "stub",
+            Self::Connected => "connected",
+        }
+    }
+}
+
+impl FromStr for AccountStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "stub" => Ok(Self::Stub),
+            "connected" => Ok(Self::Connected),
+            other => Err(format!("unknown account status: {other}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Account {
     pub id: AccountId,
     pub provider: Provider,
+    pub status: AccountStatus,
     /// Set after OAuth; optional for stub accounts.
     pub email: Option<String>,
     pub display_name: Option<String>,
@@ -84,7 +115,11 @@ impl Account {
         if let Some(name) = &self.display_name {
             return name.clone();
         }
-        format!("{} (stub)", self.provider.display_name())
+        let suffix = match self.status {
+            AccountStatus::Stub => "stub",
+            AccountStatus::Connected => "connected",
+        };
+        format!("{} ({suffix})", self.provider.display_name())
     }
 }
 
@@ -104,6 +139,7 @@ mod tests {
         let account = Account {
             id: AccountId("1".into()),
             provider: Provider::Gmail,
+            status: AccountStatus::Stub,
             email: None,
             display_name: None,
             created_at: 0,

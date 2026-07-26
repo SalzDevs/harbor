@@ -16,6 +16,7 @@
   let activeId = $state<string | null>(null);
   let error = $state<string | null>(null);
   let busy = $state(false);
+  let signingIn = $state(false);
 
   const activeAccount = $derived(
     accounts.find((a) => a.id === activeId) ?? null,
@@ -41,7 +42,12 @@
   }
 
   async function onAdd(provider: Provider) {
+    if (provider === "gmail" && info && !info.gmailOauthConfigured) {
+      error = strings.oauthNotConfigured;
+      return;
+    }
     busy = true;
+    signingIn = provider === "gmail";
     error = null;
     try {
       const account = await addAccount(provider);
@@ -51,6 +57,7 @@
       error = e instanceof Error ? e.message : String(e);
     } finally {
       busy = false;
+      signingIn = false;
     }
   }
 
@@ -84,7 +91,10 @@
             disabled={busy}
             onclick={() => onSelect(account.id)}
           >
-            <span class="provider">{account.provider}</span>
+            <span class="provider"
+              >{account.provider}
+              {#if account.status === "connected"}· connected{/if}</span
+            >
             <span class="label">{accountLabel(account)}</span>
           </button>
         {/each}
@@ -97,6 +107,9 @@
       <button type="button" class="btn" disabled={busy} onclick={() => onAdd("outlook")}>
         {strings.addOutlook}
       </button>
+      {#if signingIn}
+        <p class="muted hint">{strings.signingIn}</p>
+      {/if}
     </div>
   </aside>
 
@@ -109,7 +122,7 @@
       {/if}
     </div>
     {#if activeAccount}
-      <p class="muted pad">Account {activeAccount.id.slice(0, 8)}…</p>
+      <p class="muted pad">{accountLabel(activeAccount)}</p>
     {/if}
   </section>
 
@@ -118,9 +131,8 @@
       <h1>{strings.emptyShellHeading}</h1>
       {#if activeAccount}
         <p>
-          {accountLabel(activeAccount)} · {activeAccount.provider}
+          {accountLabel(activeAccount)} · {activeAccount.provider} · {activeAccount.status}
         </p>
-        <p class="status">id {activeAccount.id}</p>
       {:else}
         <p>{strings.emptyShellBody}</p>
         <p class="status">{strings.addAccount}</p>
@@ -235,6 +247,11 @@
   .btn:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  .hint {
+    margin: 0;
+    font-size: 12px;
   }
 
   .reading {

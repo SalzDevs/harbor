@@ -50,6 +50,22 @@ SQLite lives in the OS app-data directory:
 - macOS: `~/Library/Application Support/Harbor/harbor.sqlite3`
 - Linux: `~/.local/share/harbor/harbor.sqlite3` (or `$XDG_DATA_HOME/harbor`)
 
+## Gmail OAuth
+
+Create a Google Cloud **Desktop** OAuth client. Add redirect URI `http://127.0.0.1` (loopback; Harbor picks an ephemeral port).
+
+Either:
+
+```bash
+export HARBOR_GMAIL_CLIENT_ID="….apps.googleusercontent.com"
+# optional:
+export HARBOR_GMAIL_CLIENT_SECRET="…"
+```
+
+Or copy `oauth.json.example` to the data dir as `oauth.json` (see paths above).
+
+Scopes used: `openid email profile https://mail.google.com/` (IMAP/SMTP XOAUTH2).
+
 ## Design notes (v1)
 
 - Providers: Gmail + Outlook via OAuth2 only

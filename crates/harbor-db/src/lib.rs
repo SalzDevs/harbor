@@ -4,11 +4,13 @@ mod accounts;
 mod error;
 mod paths;
 mod store;
+mod tokens;
 
 pub use accounts::AccountRepo;
 pub use error::{DbError, Result};
 pub use paths::{data_dir, database_path};
 pub use store::Db;
+pub use tokens::TokenRepo;
 
 /// Placeholder health check.
 pub fn db_status() -> String {
