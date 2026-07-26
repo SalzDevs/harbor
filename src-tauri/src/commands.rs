@@ -1,13 +1,21 @@
-use harbor_core::imap::list_remote_folders;
+use harbor_core::imap::{
+    fetch_headers_for_uids, list_remote_folders, logout, search_all_uids, search_uids_after,
+    select_mailbox,
+};
 use harbor_core::oauth::{
     gmail_token_url, load_oauth_config, outlook_token_url, refresh_access_token, sign_in_gmail,
     sign_in_outlook, OAuthClientConfig, OAuthTokenSet, TokenRefreshRequest,
 };
-use harbor_core::{strings, Account, AccountId, Folder, Provider};
-use harbor_db::{AccountRepo, FolderRepo, TokenRepo};
-use tauri::State;
+use harbor_core::{
+    strings, Account, AccountId, Folder, FolderId, FolderSyncProgress, FolderSyncResult,
+    FolderSyncState, MessagePage, Provider,
+};
+use harbor_db::{AccountRepo, FolderRepo, MessageRepo, TokenRepo};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::state::AppState;
+
+const HEADER_BATCH: usize = 150;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,7 +48,6 @@ pub fn list_accounts(state: State<'_, AppState>) -> Result<Vec<Account>, String>
     db.list_accounts().map_err(|e| e.to_string())
 }
 
-/// Full Gmail OAuth2 + PKCE. Opens the system browser. No account is written on failure.
 #[tauri::command]
 pub fn sign_in_gmail_account(state: State<'_, AppState>) -> Result<Account, String> {
     let data_dir = harbor_db::data_dir();
@@ -64,7 +71,6 @@ pub fn sign_in_gmail_account(state: State<'_, AppState>) -> Result<Account, Stri
     Ok(account)
 }
 
-/// Full Outlook/Microsoft OAuth2 + PKCE. No account is written on failure.
 #[tauri::command]
 pub fn sign_in_outlook_account(state: State<'_, AppState>) -> Result<Account, String> {
     let data_dir = harbor_db::data_dir();
@@ -104,7 +110,6 @@ fn persist_connected(
     Ok(account)
 }
 
-/// Refresh access token when expired. Returns whether a network refresh ran.
 #[tauri::command]
 pub fn refresh_account_token(
     state: State<'_, AppState>,
@@ -202,7 +207,6 @@ pub fn list_folders(
     db.list_folders(&id).map_err(|e| e.to_string())
 }
 
-/// IMAP XOAUTH2 connect + LIST, persist folders for the account.
 #[tauri::command]
 pub fn sync_folders(state: State<'_, AppState>, account_id: String) -> Result<Vec<Folder>, String> {
     let id = AccountId(account_id);
@@ -234,6 +238,136 @@ fn sync_folders_for_account(
 
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.replace_folders(id, &remote).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_messages(
+    state: State<'_, AppState>,
+    folder_id: String,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<MessagePage, String> {
+    let id = FolderId(folder_id);
+    let limit = limit.unwrap_or(100).min(500);
+    let offset = offset.unwrap_or(0);
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.list_messages(&id, limit, offset)
+        .map_err(|e| e.to_string())
+}
+
+/// Incremental header sync for one folder. Emits `folder-sync-progress`.
+#[tauri::command]
+pub fn sync_folder_headers(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    folder_id: String,
+) -> Result<FolderSyncResult, String> {
+    let folder_id = FolderId(folder_id);
+
+    let (account_id, provider, email, imap_name) = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let folder = db
+            .get_folder(&folder_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("folder not found: {}", folder_id.as_str()))?;
+        let account = db
+            .get_account(&folder.account_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "account not found".to_string())?;
+        if account.status != harbor_core::AccountStatus::Connected {
+            return Err("account is not connected".into());
+        }
+        let email = account
+            .email
+            .ok_or_else(|| "account has no email".to_string())?;
+        (
+            folder.account_id,
+            account.provider,
+            email,
+            folder.imap_name,
+        )
+    };
+
+    let fresh = ensure_fresh_access_token(&state, &account_id)?;
+    let (mut session, meta) =
+        select_mailbox(provider, &email, &fresh.access_token, &imap_name)
+            .map_err(|e| e.to_string())?;
+
+    let prior = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.get_folder_sync_state(&folder_id)
+            .map_err(|e| e.to_string())?
+    };
+
+    let mut last_uid = 0u32;
+    if let Some(prev) = prior {
+        if prev.uidvalidity != meta.uidvalidity {
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            db.clear_folder_memberships(&folder_id)
+                .map_err(|e| e.to_string())?;
+        } else {
+            last_uid = prev.last_uid;
+        }
+    }
+
+    let new_uids = search_uids_after(&mut session, last_uid).map_err(|e| e.to_string())?;
+    let total = new_uids.len() as u32;
+    let mut fetched = 0u32;
+
+    let _ = app.emit(
+        "folder-sync-progress",
+        FolderSyncProgress {
+            folder_id: folder_id.clone(),
+            fetched: 0,
+            total,
+        },
+    );
+
+    for chunk in new_uids.chunks(HEADER_BATCH) {
+        let headers =
+            fetch_headers_for_uids(&mut session, chunk).map_err(|e| e.to_string())?;
+        {
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            db.upsert_fetched_headers(&account_id, &folder_id, &headers)
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(max) = chunk.iter().max() {
+            last_uid = last_uid.max(*max);
+        }
+        fetched += chunk.len() as u32;
+        let _ = app.emit(
+            "folder-sync-progress",
+            FolderSyncProgress {
+                folder_id: folder_id.clone(),
+                fetched,
+                total,
+            },
+        );
+    }
+
+    // Expunge: drop local UIDs no longer on server.
+    let live = search_all_uids(&mut session).map_err(|e| e.to_string())?;
+    {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.retain_folder_uids(&folder_id, &live)
+            .map_err(|e| e.to_string())?;
+        db.set_folder_sync_state(&FolderSyncState {
+            folder_id: folder_id.clone(),
+            uidvalidity: meta.uidvalidity,
+            last_uid,
+            uidnext: meta.uidnext,
+            last_synced_at: Some(now_unix()),
+        })
+        .map_err(|e| e.to_string())?;
+    }
+
+    logout(session);
+
+    Ok(FolderSyncResult {
+        folder_id,
+        fetched,
+        total,
+    })
 }
 
 #[tauri::command]

@@ -23,6 +23,8 @@ pub fn run() {
             commands::refresh_account_token,
             commands::list_folders,
             commands::sync_folders,
+            commands::list_messages,
+            commands::sync_folder_headers,
             commands::select_account,
             commands::selected_account_id,
         ])

@@ -8,6 +8,8 @@ use crate::store::Db;
 
 pub trait FolderRepo {
     fn list_folders(&self, account_id: &AccountId) -> Result<Vec<Folder>>;
+    fn get_folder(&self, folder_id: &FolderId) -> Result<Option<Folder>>;
+    /// Upsert by (account_id, imap_name) so folder IDs stay stable across syncs.
     fn replace_folders(&self, account_id: &AccountId, remote: &[RemoteFolder]) -> Result<Vec<Folder>>;
 }
 
@@ -37,40 +39,80 @@ impl FolderRepo for Db {
         Ok(folders)
     }
 
+    fn get_folder(&self, folder_id: &FolderId) -> Result<Option<Folder>> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id, account_id, imap_name, delimiter, role, name
+             FROM folders WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query([folder_id.as_str()])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(map_folder(row)?))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn replace_folders(
         &self,
         account_id: &AccountId,
         remote: &[RemoteFolder],
     ) -> Result<Vec<Folder>> {
-        self.conn()
-            .execute("DELETE FROM folders WHERE account_id = ?1", [account_id.as_str()])?;
+        let seen_names: Vec<&str> = remote.iter().map(|r| r.imap_name.as_str()).collect();
 
-        let mut out = Vec::with_capacity(remote.len());
-        for r in remote {
-            let id = FolderId(Uuid::new_v4().to_string());
+        // Remove folders no longer present (cascades message_folders / sync state).
+        if seen_names.is_empty() {
             self.conn().execute(
-                "INSERT INTO folders (id, account_id, imap_name, delimiter, role, name)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    id.as_str(),
-                    account_id.as_str(),
-                    r.imap_name,
-                    r.delimiter,
-                    r.role.as_str(),
-                    r.name,
-                ],
+                "DELETE FROM folders WHERE account_id = ?1",
+                [account_id.as_str()],
             )?;
-            out.push(Folder {
-                id,
-                account_id: account_id.clone(),
-                imap_name: r.imap_name.clone(),
-                delimiter: r.delimiter.clone(),
-                role: r.role,
-                name: r.name.clone(),
-            });
+        } else {
+            let placeholders = seen_names
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 2))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "DELETE FROM folders WHERE account_id = ?1 AND imap_name NOT IN ({placeholders})"
+            );
+            let mut stmt = self.conn().prepare(&sql)?;
+            let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(1 + seen_names.len());
+            params.push(&account_id.0);
+            for n in &seen_names {
+                params.push(n);
+            }
+            stmt.execute(params.as_slice())?;
         }
 
-        // Re-read for stable sort order
+        for r in remote {
+            let existing: Option<String> = self.conn().query_row(
+                "SELECT id FROM folders WHERE account_id = ?1 AND imap_name = ?2",
+                params![account_id.as_str(), r.imap_name],
+                |row| row.get(0),
+            ).ok();
+
+            if let Some(id) = existing {
+                self.conn().execute(
+                    "UPDATE folders SET delimiter = ?1, role = ?2, name = ?3 WHERE id = ?4",
+                    params![r.delimiter, r.role.as_str(), r.name, id],
+                )?;
+            } else {
+                let id = Uuid::new_v4().to_string();
+                self.conn().execute(
+                    "INSERT INTO folders (id, account_id, imap_name, delimiter, role, name)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        id,
+                        account_id.as_str(),
+                        r.imap_name,
+                        r.delimiter,
+                        r.role.as_str(),
+                        r.name,
+                    ],
+                )?;
+            }
+        }
+
         self.list_folders(account_id)
     }
 }
@@ -102,33 +144,21 @@ mod tests {
     use harbor_core::{FolderRole, Provider};
 
     #[test]
-    fn replace_and_list_folders() {
+    fn upsert_keeps_stable_ids() {
         let db = Db::open_in_memory().unwrap();
         let account = db
             .add_connected_account(Provider::Gmail, "a@g.com".into(), None)
             .unwrap();
-        let remote = vec![
-            RemoteFolder {
-                imap_name: "INBOX".into(),
-                delimiter: Some("/".into()),
-                role: FolderRole::Inbox,
-                name: "INBOX".into(),
-                attributes: vec![],
-            },
-            RemoteFolder {
-                imap_name: "[Gmail]/Sent Mail".into(),
-                delimiter: Some("/".into()),
-                role: FolderRole::Sent,
-                name: "Sent Mail".into(),
-                attributes: vec!["\\Sent".into()],
-            },
-        ];
-        let folders = db.replace_folders(&account.id, &remote).unwrap();
-        assert_eq!(folders.len(), 2);
-        assert_eq!(folders[0].role, FolderRole::Inbox);
-        assert_eq!(folders[1].role, FolderRole::Sent);
-
-        let again = db.list_folders(&account.id).unwrap();
-        assert_eq!(again.len(), 2);
+        let remote = vec![RemoteFolder {
+            imap_name: "INBOX".into(),
+            delimiter: Some("/".into()),
+            role: FolderRole::Inbox,
+            name: "INBOX".into(),
+            attributes: vec![],
+        }];
+        let first = db.replace_folders(&account.id, &remote).unwrap();
+        let id = first[0].id.clone();
+        let second = db.replace_folders(&account.id, &remote).unwrap();
+        assert_eq!(second[0].id, id);
     }
 }

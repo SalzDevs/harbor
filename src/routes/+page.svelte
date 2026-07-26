@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import {
     accountLabel,
     addAccount,
@@ -8,19 +9,34 @@
     selectAccount,
     selectedAccountId,
   } from "$lib/accounts";
+  import MessageList from "$lib/components/MessageList.svelte";
   import { folderLabel, listFolders, syncFolders } from "$lib/folders";
+  import { listMessages, syncFolderHeaders } from "$lib/messages";
   import { strings } from "$lib/strings";
-  import type { Account, AppInfo, Folder, Provider } from "$lib/types";
+  import type {
+    Account,
+    AppInfo,
+    Folder,
+    FolderSyncProgress,
+    MessageListItem,
+    Provider,
+  } from "$lib/types";
 
   let info = $state<AppInfo | null>(null);
   let accounts = $state<Account[]>([]);
   let folders = $state<Folder[]>([]);
+  let messages = $state<MessageListItem[]>([]);
+  let messageTotal = $state(0);
   let activeId = $state<string | null>(null);
   let activeFolderId = $state<string | null>(null);
   let error = $state<string | null>(null);
   let busy = $state(false);
   let signingIn = $state(false);
   let syncingFolders = $state(false);
+  let syncProgress = $state<FolderSyncProgress | null>(null);
+  let headerSyncToken = 0;
+
+  let unlistenProgress: UnlistenFn | null = null;
 
   const activeAccount = $derived(
     accounts.find((a) => a.id === activeId) ?? null,
@@ -30,7 +46,19 @@
   );
 
   onMount(async () => {
+    unlistenProgress = await listen<FolderSyncProgress>(
+      "folder-sync-progress",
+      (event) => {
+        if (event.payload.folderId === activeFolderId) {
+          syncProgress = event.payload;
+        }
+      },
+    );
     await reload();
+  });
+
+  onDestroy(() => {
+    unlistenProgress?.();
   });
 
   async function reload() {
@@ -48,6 +76,8 @@
       } else {
         folders = [];
         activeFolderId = null;
+        messages = [];
+        messageTotal = 0;
       }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -67,7 +97,14 @@
         }
       }
       const inbox = folders.find((f) => f.role === "inbox");
-      activeFolderId = inbox?.id ?? folders[0]?.id ?? null;
+      const nextId = inbox?.id ?? folders[0]?.id ?? null;
+      if (nextId) {
+        await selectFolder(nextId);
+      } else {
+        activeFolderId = null;
+        messages = [];
+        messageTotal = 0;
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
       if (!fromNetwork) {
@@ -76,6 +113,39 @@
     } finally {
       syncingFolders = false;
     }
+  }
+
+  async function selectFolder(folderId: string) {
+    activeFolderId = folderId;
+    syncProgress = null;
+    // First paint from local DB only.
+    try {
+      const page = await listMessages(folderId, 300, 0);
+      messages = page.messages;
+      messageTotal = page.total;
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+      messages = [];
+      messageTotal = 0;
+    }
+    // Background header sync.
+    const token = ++headerSyncToken;
+    void (async () => {
+      try {
+        await syncFolderHeaders(folderId);
+        if (token !== headerSyncToken || activeFolderId !== folderId) return;
+        const page = await listMessages(folderId, 300, 0);
+        messages = page.messages;
+        messageTotal = page.total;
+      } catch (e) {
+        if (token !== headerSyncToken || activeFolderId !== folderId) return;
+        error = e instanceof Error ? e.message : String(e);
+      } finally {
+        if (token === headerSyncToken && activeFolderId === folderId) {
+          syncProgress = null;
+        }
+      }
+    })();
   }
 
   async function onAdd(provider: Provider) {
@@ -171,7 +241,7 @@
               type="button"
               class="folder-item"
               class:active={folder.id === activeFolderId}
-              onclick={() => (activeFolderId = folder.id)}
+              onclick={() => selectFolder(folder.id)}
             >
               {folderLabel(folder)}
             </button>
@@ -197,14 +267,12 @@
     <div class="pane-label">
       {#if activeFolder}
         {folderLabel(activeFolder)}
-      {:else if activeAccount}
-        {strings.selectAccount}
       {:else}
-        {strings.selectAccount}
+        {strings.selectFolder}
       {/if}
     </div>
     {#if activeFolder}
-      <p class="muted pad">{activeFolder.imapName}</p>
+      <MessageList {messages} total={messageTotal} {syncProgress} />
     {:else if activeAccount}
       <p class="muted pad">{accountLabel(activeAccount)}</p>
     {/if}
@@ -214,7 +282,7 @@
     <div class="empty">
       <h1>{strings.emptyShellHeading}</h1>
       {#if activeFolder}
-        <p>{folderLabel(activeFolder)} · {activeFolder.role}</p>
+        <p>{strings.emptyShellBody}</p>
       {:else if activeAccount}
         <p>
           {accountLabel(activeAccount)} · {activeAccount.provider} · {activeAccount.status}
@@ -237,7 +305,7 @@
 <style>
   .shell {
     display: grid;
-    grid-template-columns: 260px 320px 1fr;
+    grid-template-columns: 260px 360px 1fr;
     height: 100vh;
     width: 100vw;
     background: var(--bg);

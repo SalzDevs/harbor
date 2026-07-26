@@ -51,6 +51,51 @@ CREATE TABLE IF NOT EXISTS folders (
 CREATE INDEX IF NOT EXISTS idx_folders_account ON folders(account_id);
 "#;
 
+const MIGRATION_V4: &str = r#"
+CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY NOT NULL,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    rfc_message_id TEXT,
+    subject TEXT NOT NULL DEFAULT '',
+    from_address TEXT,
+    from_name TEXT,
+    to_list TEXT,
+    date_unix INTEGER NOT NULL DEFAULT 0,
+    size INTEGER,
+    is_seen INTEGER NOT NULL DEFAULT 0,
+    is_flagged INTEGER NOT NULL DEFAULT 0,
+    is_answered INTEGER NOT NULL DEFAULT 0,
+    is_draft INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_rfc
+    ON messages(account_id, rfc_message_id)
+    WHERE rfc_message_id IS NOT NULL AND rfc_message_id != '';
+
+CREATE INDEX IF NOT EXISTS idx_messages_account_date
+    ON messages(account_id, date_unix DESC);
+
+CREATE TABLE IF NOT EXISTS message_folders (
+    folder_id TEXT NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    uid INTEGER NOT NULL,
+    PRIMARY KEY (folder_id, uid),
+    UNIQUE (folder_id, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_folders_message
+    ON message_folders(message_id);
+
+CREATE TABLE IF NOT EXISTS folder_sync_state (
+    folder_id TEXT PRIMARY KEY NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    uidvalidity INTEGER NOT NULL,
+    last_uid INTEGER NOT NULL DEFAULT 0,
+    uidnext INTEGER,
+    last_synced_at INTEGER
+);
+"#;
+
 pub struct Db {
     conn: Connection,
     path: PathBuf,
@@ -133,6 +178,10 @@ impl Db {
         if current < 3 {
             self.conn.execute_batch(MIGRATION_V3)?;
             self.mark_version(3)?;
+        }
+        if current < 4 {
+            self.conn.execute_batch(MIGRATION_V4)?;
+            self.mark_version(4)?;
         }
 
         Ok(())
