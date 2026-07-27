@@ -137,7 +137,7 @@ pub fn search_all_uids(session: &mut Session) -> Result<Vec<u32>> {
 }
 
 const HEADER_FETCH_QUERY: &str =
-    "(FLAGS ENVELOPE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])";
+    "(FLAGS ENVELOPE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID IN-REPLY-TO REFERENCES)])";
 
 /// Fetch headers+flags for a list of UIDs (caller batches).
 pub fn fetch_headers_for_uids(session: &mut Session, uids: &[u32]) -> Result<Vec<FetchedHeader>> {
@@ -287,6 +287,8 @@ fn parse_fetch(fetch: &imap::types::Fetch, uid: u32) -> FetchedHeader {
     let mut to_list = None;
     let mut date_unix = 0i64;
     let mut rfc_message_id = None;
+    let mut in_reply_to = None;
+    let mut references = None;
 
     if let Some(env) = fetch.envelope() {
         subject = decode_opt_bytes(env.subject).unwrap_or_default();
@@ -304,14 +306,25 @@ fn parse_fetch(fetch: &imap::types::Fetch, uid: u32) -> FetchedHeader {
             date_unix = parse_rfc2822_date(&date).unwrap_or(0);
         }
         rfc_message_id = decode_opt_bytes(env.message_id).map(normalize_message_id);
+        in_reply_to = decode_opt_bytes(env.in_reply_to).map(normalize_message_id);
     }
 
-    // Prefer Message-ID from header fields if envelope lacked it.
-    if rfc_message_id.is_none() {
-        if let Some(hdr) = fetch.header() {
-            if let Ok(text) = std::str::from_utf8(hdr) {
+    // Prefer header fields when envelope lacked them.
+    if let Some(hdr) = fetch.header() {
+        if let Ok(text) = std::str::from_utf8(hdr) {
+            if rfc_message_id.is_none() {
                 if let Some(mid) = extract_header_field(text, "message-id") {
                     rfc_message_id = Some(normalize_message_id(mid));
+                }
+            }
+            if in_reply_to.is_none() {
+                if let Some(irt) = extract_header_field(text, "in-reply-to") {
+                    in_reply_to = Some(normalize_message_id(irt));
+                }
+            }
+            if references.is_none() {
+                if let Some(refs) = extract_header_field(text, "references") {
+                    references = Some(normalize_references(&refs));
                 }
             }
         }
@@ -334,6 +347,8 @@ fn parse_fetch(fetch: &imap::types::Fetch, uid: u32) -> FetchedHeader {
         date_unix,
         size,
         flags,
+        in_reply_to,
+        references,
     }
 }
 
@@ -373,6 +388,25 @@ fn format_address(addr: &imap_proto::types::Address<'_>) -> Option<String> {
 
 fn normalize_message_id(raw: String) -> String {
     raw.trim().trim_matches(|c| c == '<' || c == '>').to_string()
+}
+
+/// Normalize References header: extract all <id> tokens, space-joined.
+fn normalize_references(raw: &str) -> String {
+    let ids: Vec<&str> = raw
+        .split_whitespace()
+        .map(|s| s.trim_matches(|c| c == '<' || c == '>'))
+        .filter(|s| !s.is_empty())
+        .collect();
+    ids.join(" ")
+}
+
+/// Extract all Message-IDs from a References string, oldest-first.
+pub fn parse_references_list(references: &str) -> Vec<String> {
+    references
+        .split_whitespace()
+        .map(|s| s.trim_matches(|c| c == '<' || c == '>').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn extract_header_field(headers: &str, name: &str) -> Option<String> {

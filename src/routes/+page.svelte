@@ -10,6 +10,7 @@
     selectedAccountId,
   } from "$lib/accounts";
   import MessageList from "$lib/components/MessageList.svelte";
+  import ConversationList from "$lib/components/ConversationList.svelte";
   import ReadingPane from "$lib/components/ReadingPane.svelte";
   import UndoBar from "$lib/components/UndoBar.svelte";
   import {
@@ -21,8 +22,12 @@
   import {
     archiveMessage,
     deleteMessage,
+    getViewMode,
+    listConversations,
     listMessages,
+    listThreadMessages,
     openMessage,
+    setViewMode,
     setMessageFlags,
     syncFolderHeaders,
     undoAction,
@@ -33,12 +38,14 @@
     ActionRecord,
     AppInfo,
     ConnectionStatus,
+    ConversationListItem,
     Folder,
     FolderMailUpdated,
     FolderSyncProgress,
     MessageDetail,
     MessageListItem,
     Provider,
+    ViewMode,
   } from "$lib/types";
 
   let info = $state<AppInfo | null>(null);
@@ -59,6 +66,11 @@
   let syncProgress = $state<FolderSyncProgress | null>(null);
   let connection = $state<ConnectionStatus | null>(null);
   let lastAction = $state<ActionRecord | null>(null);
+  let viewMode = $state<ViewMode>("conversation");
+  let conversations = $state<ConversationListItem[]>([]);
+  let conversationTotal = $state(0);
+  let selectedThreadRoot = $state<string | null>(null);
+  let threadMessages = $state<MessageListItem[]>([]);
   let headerSyncToken = 0;
   let openToken = 0;
 
@@ -93,13 +105,7 @@
       "folder-mail-updated",
       async (event) => {
         if (event.payload.folderId === activeFolderId) {
-          try {
-            const page = await listMessages(event.payload.folderId, 300, 0);
-            messages = page.messages;
-            messageTotal = page.total;
-          } catch {
-            /* keep cached list */
-          }
+          await loadListData(event.payload.folderId);
         }
       },
     );
@@ -107,6 +113,11 @@
       connection = await getConnectionStatus();
     } catch {
       /* ignore */
+    }
+    try {
+      viewMode = await getViewMode();
+    } catch {
+      /* default conversation */
     }
     await reload();
   });
@@ -180,31 +191,22 @@
     openDetail = null;
     openLoading = false;
     openError = null;
+    selectedThreadRoot = null;
+    threadMessages = [];
   }
 
   async function selectFolder(folderId: string) {
     activeFolderId = folderId;
     syncProgress = null;
     clearOpen();
-    // First paint from local DB only.
-    try {
-      const page = await listMessages(folderId, 300, 0);
-      messages = page.messages;
-      messageTotal = page.total;
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-      messages = [];
-      messageTotal = 0;
-    }
+    await loadListData(folderId);
     // Background header sync.
     const token = ++headerSyncToken;
     void (async () => {
       try {
         await syncFolderHeaders(folderId);
         if (token !== headerSyncToken || activeFolderId !== folderId) return;
-        const page = await listMessages(folderId, 300, 0);
-        messages = page.messages;
-        messageTotal = page.total;
+        await loadListData(folderId);
       } catch (e) {
         if (token !== headerSyncToken || activeFolderId !== folderId) return;
         error = e instanceof Error ? e.message : String(e);
@@ -214,6 +216,26 @@
         }
       }
     })();
+  }
+
+  async function loadListData(folderId: string) {
+    try {
+      if (viewMode === "conversation") {
+        const page = await listConversations(folderId, 300, 0);
+        conversations = page.conversations;
+        conversationTotal = page.total;
+        messages = [];
+        messageTotal = 0;
+      } else {
+        const page = await listMessages(folderId, 300, 0);
+        messages = page.messages;
+        messageTotal = page.total;
+        conversations = [];
+        conversationTotal = 0;
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
   }
 
   async function onAdd(provider: Provider) {
@@ -283,9 +305,7 @@
 
   async function refreshFolderList(folderId: string) {
     try {
-      const page = await listMessages(folderId, 300, 0);
-      messages = page.messages;
-      messageTotal = page.total;
+      await loadListData(folderId);
     } catch {
       /* keep cached */
     }
@@ -297,6 +317,45 @@
       openDetail = await openMessage(activeFolderId, selectedMessageId);
     } catch {
       openDetail = null;
+    }
+  }
+
+  async function onToggleViewMode() {
+    const next: ViewMode = viewMode === "conversation" ? "flat" : "conversation";
+    viewMode = next;
+    try {
+      await setViewMode(next);
+    } catch {
+      /* ignore */
+    }
+    if (activeFolderId) {
+      clearOpen();
+      await loadListData(activeFolderId);
+    }
+  }
+
+  async function onSelectConversation(conv: ConversationListItem) {
+    if (!activeFolderId) return;
+    selectedThreadRoot = conv.threadRoot;
+    openLoading = true;
+    openError = null;
+    openDetail = null;
+    const token = ++openToken;
+    try {
+      const msgs = await listThreadMessages(activeFolderId, conv.threadRoot);
+      if (token !== openToken) return;
+      threadMessages = msgs;
+      // Open the latest message in the thread.
+      if (msgs.length > 0) {
+        const latest = msgs[msgs.length - 1];
+        selectedMessageId = latest.id;
+        openDetail = await openMessage(activeFolderId, latest.id);
+      }
+    } catch (e) {
+      if (token !== openToken) return;
+      openError = e instanceof Error ? e.message : String(e);
+    } finally {
+      if (token === openToken) openLoading = false;
     }
   }
 
@@ -428,21 +487,42 @@
   </aside>
 
   <section class="pane list" aria-label="Messages">
-    <div class="pane-label">
+    <div class="pane-label row">
+      <span>
+        {#if activeFolder}
+          {folderLabel(activeFolder)}
+        {:else}
+          {strings.selectFolder}
+        {/if}
+      </span>
       {#if activeFolder}
-        {folderLabel(activeFolder)}
-      {:else}
-        {strings.selectFolder}
+        <button
+          type="button"
+          class="linkish"
+          onclick={onToggleViewMode}
+          title={viewMode === "conversation" ? strings.viewFlat : strings.viewConversation}
+        >
+          {viewMode === "conversation" ? strings.viewFlat : strings.viewConversation}
+        </button>
       {/if}
     </div>
     {#if activeFolder}
-      <MessageList
-        {messages}
-        total={messageTotal}
-        {syncProgress}
-        selectedId={selectedMessageId}
-        onselect={onSelectMessage}
-      />
+      {#if viewMode === "conversation"}
+        <ConversationList
+          conversations={conversations}
+          total={conversationTotal}
+          selectedThreadRoot={selectedThreadRoot}
+          onselect={onSelectConversation}
+        />
+      {:else}
+        <MessageList
+          {messages}
+          total={messageTotal}
+          {syncProgress}
+          selectedId={selectedMessageId}
+          onselect={onSelectMessage}
+        />
+      {/if}
     {:else if activeAccount}
       <p class="muted pad">{accountLabel(activeAccount)}</p>
     {/if}

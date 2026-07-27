@@ -106,6 +106,15 @@ CREATE TABLE IF NOT EXISTS message_bodies (
 );
 "#;
 
+const MIGRATION_V6: &str = r#"
+ALTER TABLE messages ADD COLUMN in_reply_to TEXT;
+ALTER TABLE messages ADD COLUMN references_text TEXT;
+ALTER TABLE messages ADD COLUMN thread_root TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_messages_thread
+    ON messages(account_id, thread_root);
+"#;
+
 pub struct Db {
     conn: Connection,
     path: PathBuf,
@@ -196,6 +205,23 @@ impl Db {
         if current < 5 {
             self.conn.execute_batch(MIGRATION_V5)?;
             self.mark_version(5)?;
+        }
+        if current < 6 {
+            // ALTER TABLE ADD COLUMN is idempotent-safe via check.
+            let has_irt: bool = self.conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'in_reply_to'",
+                [],
+                |row| row.get::<_, i64>(0).map(|n| n > 0),
+            )?;
+            if !has_irt {
+                self.conn.execute_batch(MIGRATION_V6)?;
+            } else {
+                self.conn.execute_batch(
+                    "CREATE INDEX IF NOT EXISTS idx_messages_thread
+                     ON messages(account_id, thread_root);",
+                )?;
+            }
+            self.mark_version(6)?;
         }
 
         Ok(())

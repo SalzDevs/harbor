@@ -1,6 +1,7 @@
 use harbor_core::{
-    AccountId, FetchedHeader, FolderId, FolderSyncState, MessageBody, MessageDetail, MessageFlags,
-    MessageId, MessageListItem, MessageLocation, MessagePage,
+    ConversationListItem, ConversationPage, AccountId, FetchedHeader, FolderId, FolderSyncState,
+    MessageBody, MessageDetail, MessageFlags, MessageId, MessageListItem, MessageLocation,
+    MessagePage,
 };
 use rusqlite::params;
 use uuid::Uuid;
@@ -74,6 +75,25 @@ pub trait MessageRepo {
         message_id: &MessageId,
         uid: u32,
     ) -> Result<()>;
+
+    /// Recompute thread_root for all messages in an account that don't have one yet
+    /// (or all if `force`). Called after each header sync batch.
+    fn recompute_threads(&self, account_id: &AccountId, force: bool) -> Result<()>;
+
+    /// List conversations (one row per thread) for a folder.
+    fn list_conversations(
+        &self,
+        folder_id: &FolderId,
+        limit: u32,
+        offset: u32,
+    ) -> Result<ConversationPage>;
+
+    /// List all messages in a folder that share the given thread_root, ordered oldest-first.
+    fn list_thread_messages(
+        &self,
+        folder_id: &FolderId,
+        thread_root: &str,
+    ) -> Result<Vec<MessageListItem>>;
 }
 
 impl MessageRepo for Db {
@@ -145,6 +165,8 @@ impl MessageRepo for Db {
         }
 
         tx.commit()?;
+        // Recompute thread roots for messages that don't have one yet.
+        self.recompute_threads(account_id, false)?;
         Ok(())
     }
 
@@ -432,6 +454,137 @@ impl MessageRepo for Db {
         )?;
         Ok(())
     }
+
+    fn recompute_threads(&self, account_id: &AccountId, force: bool) -> Result<()> {
+        let filter = if force {
+            "WHERE account_id = ?1"
+        } else {
+            "WHERE account_id = ?1 AND thread_root IS NULL"
+        };
+        let sql = format!(
+            "SELECT id, rfc_message_id, in_reply_to, references_text FROM messages {filter}"
+        );
+        let mut stmt = self.conn().prepare(&sql)?;
+        let rows = stmt.query_map([account_id.as_str()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+
+        let mut updates: Vec<(String, String)> = Vec::new();
+        for row in rows {
+            let (id, rfc, irt, refs) = row?;
+            let root = compute_thread_root(&rfc, &irt, &refs, &id);
+            updates.push((id, root));
+        }
+
+        let tx = self.conn().unchecked_transaction()?;
+        for (id, root) in &updates {
+            tx.execute(
+                "UPDATE messages SET thread_root = ?1 WHERE id = ?2",
+                params![root, id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn list_conversations(
+        &self,
+        folder_id: &FolderId,
+        limit: u32,
+        offset: u32,
+    ) -> Result<ConversationPage> {
+        let total: u32 = self.conn().query_row(
+            "SELECT COUNT(DISTINCT m.thread_root)
+             FROM message_folders mf
+             JOIN messages m ON m.id = mf.message_id
+             WHERE mf.folder_id = ?1 AND m.thread_root IS NOT NULL",
+            [folder_id.as_str()],
+            |row| row.get::<_, i64>(0).map(|n| n as u32),
+        )?;
+
+        // For each thread, get the latest message + counts.
+        let mut stmt = self.conn().prepare(
+            "SELECT
+                m.thread_root,
+                m.account_id,
+                mf.folder_id,
+                COUNT(*) AS msg_count,
+                SUM(CASE WHEN m.is_seen = 0 THEN 1 ELSE 0 END) AS unread,
+                -- latest message columns (the one with max date_unix, then max uid)
+                m_latest.id, m_latest.account_id, mf_latest.folder_id, mf_latest.uid,
+                m_latest.rfc_message_id, m_latest.subject, m_latest.from_address,
+                m_latest.from_name, m_latest.to_list, m_latest.date_unix, m_latest.size,
+                m_latest.is_seen, m_latest.is_flagged, m_latest.is_answered, m_latest.is_draft
+             FROM message_folders mf
+             JOIN messages m ON m.id = mf.message_id
+             JOIN (
+                SELECT mf2.folder_id, mf2.message_id, mf2.uid, m2.id as mid,
+                       m2.account_id, m2.rfc_message_id, m2.subject, m2.from_address,
+                       m2.from_name, m2.to_list, m2.date_unix, m2.size,
+                       m2.is_seen, m2.is_flagged, m2.is_answered, m2.is_draft, m2.thread_root
+                FROM message_folders mf2
+                JOIN messages m2 ON m2.id = mf2.message_id
+                WHERE mf2.folder_id = ?1 AND m2.thread_root IS NOT NULL
+                ORDER BY m2.date_unix DESC, mf2.uid DESC
+             ) AS latest_join ON latest_join.thread_root = m.thread_root
+             JOIN messages m_latest ON m_latest.id = latest_join.mid
+             JOIN message_folders mf_latest ON mf_latest.message_id = m_latest.id AND mf_latest.folder_id = ?1
+             WHERE mf.folder_id = ?1 AND m.thread_root IS NOT NULL
+             GROUP BY m.thread_root, m.account_id, mf.folder_id,
+                       m_latest.id, m_latest.account_id, mf_latest.folder_id, mf_latest.uid,
+                       m_latest.rfc_message_id, m_latest.subject, m_latest.from_address,
+                       m_latest.from_name, m_latest.to_list, m_latest.date_unix, m_latest.size,
+                       m_latest.is_seen, m_latest.is_flagged, m_latest.is_answered, m_latest.is_draft
+             ORDER BY m_latest.date_unix DESC, mf_latest.uid DESC
+             LIMIT ?2 OFFSET ?3",
+        )?;
+
+        let rows = stmt.query_map(
+            params![folder_id.as_str(), limit as i64, offset as i64],
+            map_conversation,
+        )?;
+        let mut conversations = Vec::new();
+        for row in rows {
+            conversations.push(row?);
+        }
+
+        Ok(ConversationPage {
+            conversations,
+            total,
+            offset,
+            limit,
+        })
+    }
+
+    fn list_thread_messages(
+        &self,
+        folder_id: &FolderId,
+        thread_root: &str,
+    ) -> Result<Vec<MessageListItem>> {
+        let mut stmt = self.conn().prepare(
+            "SELECT m.id, m.account_id, mf.folder_id, mf.uid, m.rfc_message_id,
+                    m.subject, m.from_address, m.from_name, m.to_list, m.date_unix, m.size,
+                    m.is_seen, m.is_flagged, m.is_answered, m.is_draft
+             FROM message_folders mf
+             JOIN messages m ON m.id = mf.message_id
+             WHERE mf.folder_id = ?1 AND m.thread_root = ?2
+             ORDER BY m.date_unix ASC, mf.uid ASC",
+        )?;
+        let rows = stmt.query_map(
+            params![folder_id.as_str(), thread_root],
+            map_list_item,
+        )?;
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(row?);
+        }
+        Ok(messages)
+    }
 }
 
 fn resolve_or_insert_message(
@@ -467,8 +620,10 @@ fn resolve_or_insert_message(
                     is_seen = ?7,
                     is_flagged = ?8,
                     is_answered = ?9,
-                    is_draft = ?10
-                 WHERE id = ?11",
+                    is_draft = ?10,
+                    in_reply_to = ?11,
+                    references_text = ?12
+                 WHERE id = ?13",
                 params![
                     row.subject,
                     row.from_address,
@@ -480,6 +635,8 @@ fn resolve_or_insert_message(
                     row.flags.flagged as i64,
                     row.flags.answered as i64,
                     row.flags.draft as i64,
+                    row.in_reply_to,
+                    row.references,
                     id,
                 ],
             )?;
@@ -491,8 +648,9 @@ fn resolve_or_insert_message(
     tx.execute(
         "INSERT INTO messages (
             id, account_id, rfc_message_id, subject, from_address, from_name, to_list,
-            date_unix, size, is_seen, is_flagged, is_answered, is_draft, created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            date_unix, size, is_seen, is_flagged, is_answered, is_draft, created_at,
+            in_reply_to, references_text
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
             id.as_str(),
             account_id.as_str(),
@@ -508,9 +666,79 @@ fn resolve_or_insert_message(
             row.flags.answered as i64,
             row.flags.draft as i64,
             now,
+            row.in_reply_to,
+            row.references,
         ],
     )?;
     Ok(id)
+}
+
+/// Compute thread_root from headers. Uses References (oldest-first) then In-Reply-To.
+/// Falls back to the message's own rfc_message_id, or its internal id if none.
+fn compute_thread_root(
+    rfc: &Option<String>,
+    in_reply_to: &Option<String>,
+    references: &Option<String>,
+    internal_id: &str,
+) -> String {
+    // References is space-separated, oldest-first. The first entry is the thread root.
+    if let Some(refs) = references {
+        let ids: Vec<&str> = refs.split_whitespace().collect();
+        if let Some(first) = ids.first() {
+            return first.to_string();
+        }
+    }
+    // Fall back to In-Reply-To (single id). This isn't the root but groups replies.
+    if let Some(irt) = in_reply_to {
+        if !irt.is_empty() {
+            return irt.clone();
+        }
+    }
+    // No parent references: this message is a root.
+    rfc.clone().unwrap_or_else(|| internal_id.to_string())
+}
+
+fn map_conversation(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationListItem> {
+    let thread_root: String = row.get(0)?;
+    let account_id = AccountId(row.get(1)?);
+    let folder_id = FolderId(row.get(2)?);
+    let message_count: i64 = row.get(3)?;
+    let unread_count: i64 = row.get(4)?;
+    let latest = map_list_item_partial(row, 5)?;
+    Ok(ConversationListItem {
+        thread_root,
+        account_id,
+        folder_id,
+        message_count: message_count as u32,
+        unread_count: unread_count as u32,
+        latest,
+    })
+}
+
+/// Map a message starting at column offset `start`.
+fn map_list_item_partial(row: &rusqlite::Row<'_>, start: usize) -> rusqlite::Result<MessageListItem> {
+    let i = start;
+    Ok(MessageListItem {
+        id: MessageId(row.get(i)?),
+        account_id: AccountId(row.get(i + 1)?),
+        folder_id: FolderId(row.get(i + 2)?),
+        uid: row.get::<_, i64>(i + 3)? as u32,
+        rfc_message_id: row.get(i + 4)?,
+        subject: row.get(i + 5)?,
+        from_address: row.get(i + 6)?,
+        from_name: row.get(i + 7)?,
+        to_list: row.get(i + 8)?,
+        date_unix: row.get(i + 9)?,
+        size: row
+            .get::<_, Option<i64>>(i + 10)?
+            .map(|n| n as u32),
+        flags: MessageFlags {
+            seen: row.get::<_, i64>(i + 11)? != 0,
+            flagged: row.get::<_, i64>(i + 12)? != 0,
+            answered: row.get::<_, i64>(i + 13)? != 0,
+            draft: row.get::<_, i64>(i + 14)? != 0,
+        },
+    })
 }
 
 fn map_list_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageListItem> {
@@ -605,6 +833,8 @@ mod tests {
             to_list: Some("c@d.com".into()),
             date_unix: date,
             size: Some(100),
+            in_reply_to: None,
+            references: None,
             flags: MessageFlags {
                 seen: false,
                 flagged: false,

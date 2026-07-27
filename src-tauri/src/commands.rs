@@ -1,8 +1,9 @@
 use harbor_core::imap::{fetch_message_bytes, list_remote_folders};
 use harbor_core::oauth::{load_oauth_config, sign_in_gmail, sign_in_outlook, OAuthTokenSet};
 use harbor_core::{
-    parse_message_bytes, strings, Account, AccountId, ConnectionStatus, Folder, FolderId,
-    FolderRole, FolderSyncResult, MessageDetail, MessageFlags, MessageId, MessagePage, Provider,
+    parse_message_bytes, strings, Account, AccountId, ConnectionStatus, ConversationPage, Folder,
+    FolderId, FolderRole, FolderSyncResult, MessageDetail, MessageFlags, MessageId, MessagePage,
+    Provider,
 };
 use harbor_db::{AccountRepo, Db, FolderRepo, MessageRepo, TokenRepo};
 use tauri::{AppHandle, State};
@@ -305,6 +306,56 @@ pub fn watch_account(
     let id = AccountId(account_id);
     start_idle_watch(&app, &state, &id);
     Ok(())
+}
+
+// --- Conversations + view mode ---------------------------------------------
+
+#[tauri::command]
+pub fn list_conversations(
+    state: State<'_, AppState>,
+    folder_id: String,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<ConversationPage, String> {
+    let id = FolderId(folder_id);
+    let limit = limit.unwrap_or(100).min(500);
+    let offset = offset.unwrap_or(0);
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.list_conversations(&id, limit, offset)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_thread_messages(
+    state: State<'_, AppState>,
+    folder_id: String,
+    thread_root: String,
+) -> Result<Vec<harbor_core::MessageListItem>, String> {
+    let id = FolderId(folder_id);
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.list_thread_messages(&id, &thread_root)
+        .map_err(|e| e.to_string())
+}
+
+const VIEW_MODE_KEY: &str = "list_view_mode";
+
+#[tauri::command]
+pub fn get_view_mode(state: State<'_, AppState>) -> Result<String, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    Ok(db
+        .get_meta(VIEW_MODE_KEY)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "conversation".to_string()))
+}
+
+#[tauri::command]
+pub fn set_view_mode(state: State<'_, AppState>, mode: String) -> Result<(), String> {
+    if mode != "conversation" && mode != "flat" {
+        return Err("invalid view mode".into());
+    }
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.set_meta(VIEW_MODE_KEY, &mode)
+        .map_err(|e| e.to_string())
 }
 
 fn start_idle_watch(app: &AppHandle, state: &State<'_, AppState>, account_id: &AccountId) {

@@ -38,6 +38,10 @@ pub fn run() {
             commands::delete_message,
             commands::move_message,
             commands::undo_action,
+            commands::list_conversations,
+            commands::list_thread_messages,
+            commands::get_view_mode,
+            commands::set_view_mode,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

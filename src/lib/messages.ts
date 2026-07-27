@@ -1,5 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { MessageDetail, MessageListItem, MessagePage } from "./types";
+import type {
+  ActionRecord,
+  ConversationPage,
+  MessageDetail,
+  MessageListItem,
+  MessagePage,
+  ViewMode,
+} from "./types";
 
 export function messageFrom(msg: MessageListItem): string {
   if (msg.fromName) return msg.fromName;
@@ -56,8 +63,6 @@ export async function openMessage(
   return invoke<MessageDetail>("open_message", { folderId, messageId });
 }
 
-import type { ActionRecord } from "./types";
-
 export async function setMessageFlags(
   folderId: string,
   messageId: string,
@@ -91,4 +96,29 @@ export async function moveMessage(
 
 export async function undoAction(actionId: string): Promise<void> {
   return invoke("undo_action", { actionId });
+}
+
+// --- Conversations + view mode ---
+
+export async function listConversations(
+  folderId: string,
+  limit = 200,
+  offset = 0,
+): Promise<ConversationPage> {
+  return invoke<ConversationPage>("list_conversations", { folderId, limit, offset });
+}
+
+export async function listThreadMessages(
+  folderId: string,
+  threadRoot: string,
+): Promise<MessageListItem[]> {
+  return invoke<MessageListItem[]>("list_thread_messages", { folderId, threadRoot });
+}
+
+export async function getViewMode(): Promise<ViewMode> {
+  return invoke<ViewMode>("get_view_mode");
+}
+
+export async function setViewMode(mode: ViewMode): Promise<void> {
+  return invoke("set_view_mode", { mode });
 }

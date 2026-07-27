@@ -94,6 +94,8 @@ pub struct FetchedHeader {
     pub date_unix: i64,
     pub size: Option<u32>,
     pub flags: MessageFlags,
+    pub in_reply_to: Option<String>,
+    pub references: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -144,4 +146,26 @@ pub struct MessageLocation {
     pub message_id: MessageId,
     pub uid: u32,
     pub imap_name: String,
+}
+
+/// One conversation row for list display (aggregated over a thread).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationListItem {
+    pub thread_root: String,
+    pub account_id: AccountId,
+    pub folder_id: FolderId,
+    pub message_count: u32,
+    pub unread_count: u32,
+    /// The latest message in the thread (by date).
+    pub latest: MessageListItem,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPage {
+    pub conversations: Vec<ConversationListItem>,
+    pub total: u32,
+    pub offset: u32,
+    pub limit: u32,
 }

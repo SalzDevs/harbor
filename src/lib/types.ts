@@ -82,6 +82,24 @@ export type MessagePage = {
   limit: number;
 };
 
+export type ConversationListItem = {
+  threadRoot: string;
+  accountId: string;
+  folderId: string;
+  messageCount: number;
+  unreadCount: number;
+  latest: MessageListItem;
+};
+
+export type ConversationPage = {
+  conversations: ConversationListItem[];
+  total: number;
+  offset: number;
+  limit: number;
+};
+
+export type ViewMode = "conversation" | "flat";
+
 export type FolderSyncProgress = {
   folderId: string;
   fetched: number;
