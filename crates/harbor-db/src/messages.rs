@@ -56,6 +56,24 @@ pub trait MessageRepo {
         folder_id: &FolderId,
         limit: u32,
     ) -> Result<Vec<(MessageId, u32)>>;
+
+    /// Overwrite the cached flags for a message (optimistic).
+    fn set_message_flags(&self, message_id: &MessageId, flags: &MessageFlags) -> Result<()>;
+
+    /// Remove a message's membership in a folder; returns the uid it had there.
+    fn remove_folder_membership(
+        &self,
+        folder_id: &FolderId,
+        message_id: &MessageId,
+    ) -> Result<Option<u32>>;
+
+    /// Restore a previously removed membership with its original uid.
+    fn restore_folder_membership(
+        &self,
+        folder_id: &FolderId,
+        message_id: &MessageId,
+        uid: u32,
+    ) -> Result<()>;
 }
 
 impl MessageRepo for Db {
@@ -357,6 +375,62 @@ impl MessageRepo for Db {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    fn set_message_flags(&self, message_id: &MessageId, flags: &MessageFlags) -> Result<()> {
+        self.conn().execute(
+            "UPDATE messages SET
+                is_seen = ?1,
+                is_flagged = ?2,
+                is_answered = ?3,
+                is_draft = ?4
+             WHERE id = ?5",
+            params![
+                flags.seen as i64,
+                flags.flagged as i64,
+                flags.answered as i64,
+                flags.draft as i64,
+                message_id.as_str(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn remove_folder_membership(
+        &self,
+        folder_id: &FolderId,
+        message_id: &MessageId,
+    ) -> Result<Option<u32>> {
+        let uid: Option<i64> = self.conn().query_row(
+            "SELECT uid FROM message_folders WHERE folder_id = ?1 AND message_id = ?2",
+            params![folder_id.as_str(), message_id.as_str()],
+            |row| row.get(0),
+        )
+        .ok();
+        if let Some(u) = uid {
+            self.conn().execute(
+                "DELETE FROM message_folders WHERE folder_id = ?1 AND message_id = ?2",
+                params![folder_id.as_str(), message_id.as_str()],
+            )?;
+            Ok(Some(u as u32))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn restore_folder_membership(
+        &self,
+        folder_id: &FolderId,
+        message_id: &MessageId,
+        uid: u32,
+    ) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO message_folders (folder_id, message_id, uid)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(folder_id, uid) DO UPDATE SET message_id = excluded.message_id",
+            params![folder_id.as_str(), message_id.as_str(), uid as i64],
+        )?;
+        Ok(())
     }
 }
 

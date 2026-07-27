@@ -3,7 +3,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
 use harbor_core::imap::{
     fetch_headers_for_uids, fetch_raw_message, logout, search_all_uids, search_uids_after,

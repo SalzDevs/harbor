@@ -193,6 +193,35 @@ pub fn logout(session: Session) {
     let _ = session.logout();
 }
 
+/// UID STORE flags (e.g. "+FLAGS (\Seen)", "-FLAGS (\Flagged)").
+pub fn uid_store(session: &mut Session, uids: &[u32], query: &str) -> Result<()> {
+    if uids.is_empty() {
+        return Ok(());
+    }
+    let uid_set = format_uid_set(uids);
+    session.uid_store(uid_set, query)?;
+    Ok(())
+}
+
+/// Move messages to another mailbox. Uses UID MOVE when supported, else
+/// COPY + STORE \Deleted + EXPUNGE.
+pub fn uid_move(session: &mut Session, uids: &[u32], dest_mailbox: &str) -> Result<()> {
+    if uids.is_empty() {
+        return Ok(());
+    }
+    let uid_set = format_uid_set(uids);
+    let caps = session.capabilities()?;
+    if caps.has_str("MOVE") {
+        session.uid_mv(&uid_set, dest_mailbox)?;
+        Ok(())
+    } else {
+        session.uid_copy(&uid_set, dest_mailbox)?;
+        session.uid_store(uid_set, "+FLAGS (\\Deleted)")?;
+        session.expunge()?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdleWaitResult {
     MailboxChanged,

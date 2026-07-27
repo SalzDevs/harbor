@@ -11,13 +11,15 @@
     message: MessageDetail | null;
     loading?: boolean;
     error?: string | null;
+    onaction?: (
+      kind: "toggleRead" | "toggleStar" | "archive" | "delete",
+    ) => void;
   };
 
-  let { message, loading = false, error = null }: Props = $props();
+  let { message, loading = false, error = null, onaction }: Props = $props();
 
   let loadImages = $state(false);
 
-  // Reset image opt-in when message changes.
   $effect(() => {
     if (message?.id) {
       loadImages = false;
@@ -37,6 +39,10 @@ img{max-width:100%;height:auto}
 pre,code{white-space:pre-wrap;word-break:break-word}
 </style></head><body>${body}</body></html>`;
   });
+
+  function fire(kind: "toggleRead" | "toggleStar" | "archive" | "delete") {
+    onaction?.(kind);
+  }
 </script>
 
 {#if loading}
@@ -50,6 +56,32 @@ pre,code{white-space:pre-wrap;word-break:break-word}
   </div>
 {:else}
   <article class="reading">
+    <div class="toolbar">
+      <button
+        type="button"
+        class="tool"
+        title={message.flags.seen ? strings.markUnread : strings.markRead}
+        onclick={() => fire("toggleRead")}
+      >
+        {message.flags.seen ? "●" : "○"}
+      </button>
+      <button
+        type="button"
+        class="tool"
+        title={message.flags.flagged ? strings.unstar : strings.star}
+        onclick={() => fire("toggleStar")}
+      >
+        {message.flags.flagged ? "★" : "☆"}
+      </button>
+      <span class="spacer"></span>
+      <button type="button" class="tool" title={strings.archive} onclick={() => fire("archive")}>
+        ⤴
+      </button>
+      <button type="button" class="tool danger" title={strings.delete} onclick={() => fire("delete")}>
+        ✕
+      </button>
+    </div>
+
     <header class="hdr">
       <h1>{messageSubject(message)}</h1>
       <div class="meta-row">
@@ -119,6 +151,42 @@ pre,code{white-space:pre-wrap;word-break:break-word}
     flex-direction: column;
     height: 100%;
     min-height: 0;
+  }
+
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-elevated);
+    flex-shrink: 0;
+  }
+
+  .tool {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 16px;
+    width: 30px;
+    height: 28px;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .tool:hover {
+    background: var(--bg-pane);
+    color: var(--text);
+  }
+
+  .tool.danger:hover {
+    color: #f85149;
+  }
+
+  .spacer {
+    flex: 1;
   }
 
   .hdr {

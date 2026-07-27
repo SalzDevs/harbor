@@ -1,3 +1,4 @@
+mod actions;
 mod commands;
 mod idle;
 mod state;
@@ -32,6 +33,11 @@ pub fn run() {
             commands::selected_account_id,
             commands::get_connection_status,
             commands::watch_account,
+            commands::set_message_flags,
+            commands::archive_message,
+            commands::delete_message,
+            commands::move_message,
+            commands::undo_action,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

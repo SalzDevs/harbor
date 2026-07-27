@@ -108,3 +108,13 @@ export type FolderMailUpdated = {
   folderId: string;
   accountId: string;
 };
+
+export type ActionKind = "setFlags" | "move";
+
+export type ActionRecord = {
+  id: string;
+  kind: ActionKind;
+  label: string;
+  folderId: string;
+  messageId: string;
+};

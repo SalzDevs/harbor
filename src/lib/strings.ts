@@ -30,6 +30,14 @@ export const strings = {
   statusOnline: "Connected",
   statusOffline: "Offline — showing cached mail",
   statusReconnecting: "Reconnecting…",
+  markRead: "Mark read",
+  markUnread: "Mark unread",
+  star: "Star",
+  unstar: "Unstar",
+  archive: "Archive",
+  delete: "Delete",
+  move: "Move",
+  undo: "Undo",
   gmailOauthNotConfigured:
     "Gmail OAuth is not configured. Set HARBOR_GMAIL_CLIENT_ID or add oauth.json in the data directory.",
   outlookOauthNotConfigured:

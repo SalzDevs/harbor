@@ -11,16 +11,26 @@
   } from "$lib/accounts";
   import MessageList from "$lib/components/MessageList.svelte";
   import ReadingPane from "$lib/components/ReadingPane.svelte";
+  import UndoBar from "$lib/components/UndoBar.svelte";
   import {
     connectionLabel,
     getConnectionStatus,
     watchAccount,
   } from "$lib/connection";
   import { folderLabel, listFolders, syncFolders } from "$lib/folders";
-  import { listMessages, openMessage, syncFolderHeaders } from "$lib/messages";
+  import {
+    archiveMessage,
+    deleteMessage,
+    listMessages,
+    openMessage,
+    setMessageFlags,
+    syncFolderHeaders,
+    undoAction,
+  } from "$lib/messages";
   import { strings } from "$lib/strings";
   import type {
     Account,
+    ActionRecord,
     AppInfo,
     ConnectionStatus,
     Folder,
@@ -48,6 +58,7 @@
   let syncingFolders = $state(false);
   let syncProgress = $state<FolderSyncProgress | null>(null);
   let connection = $state<ConnectionStatus | null>(null);
+  let lastAction = $state<ActionRecord | null>(null);
   let headerSyncToken = 0;
   let openToken = 0;
 
@@ -269,6 +280,72 @@
       if (token === openToken) openLoading = false;
     }
   }
+
+  async function refreshFolderList(folderId: string) {
+    try {
+      const page = await listMessages(folderId, 300, 0);
+      messages = page.messages;
+      messageTotal = page.total;
+    } catch {
+      /* keep cached */
+    }
+  }
+
+  async function reloadOpenDetail() {
+    if (!activeFolderId || !selectedMessageId) return;
+    try {
+      openDetail = await openMessage(activeFolderId, selectedMessageId);
+    } catch {
+      openDetail = null;
+    }
+  }
+
+  async function onMessageAction(
+    kind: "toggleRead" | "toggleStar" | "archive" | "delete",
+  ) {
+    if (!activeFolderId || !openDetail) return;
+    const folderId = activeFolderId;
+    const messageId = openDetail.id;
+    try {
+      if (kind === "toggleRead") {
+        const record = await setMessageFlags(folderId, messageId, !openDetail.flags.seen);
+        lastAction = record;
+        openDetail = { ...openDetail, flags: { ...openDetail.flags, seen: !openDetail.flags.seen } };
+        await refreshFolderList(folderId);
+      } else if (kind === "toggleStar") {
+        const record = await setMessageFlags(folderId, messageId, undefined, !openDetail.flags.flagged);
+        lastAction = record;
+        openDetail = { ...openDetail, flags: { ...openDetail.flags, flagged: !openDetail.flags.flagged } };
+        await refreshFolderList(folderId);
+      } else if (kind === "archive") {
+        const record = await archiveMessage(folderId, messageId);
+        lastAction = record;
+        clearOpen();
+        await refreshFolderList(folderId);
+      } else if (kind === "delete") {
+        const record = await deleteMessage(folderId, messageId);
+        lastAction = record;
+        clearOpen();
+        await refreshFolderList(folderId);
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async function onUndo() {
+    if (!lastAction) return;
+    const id = lastAction.id;
+    const folderId = lastAction.folderId;
+    lastAction = null;
+    try {
+      await undoAction(id);
+      await refreshFolderList(folderId);
+      await reloadOpenDetail();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
 </script>
 
 <div class="shell">
@@ -375,15 +452,22 @@
   </section>
 
   <main class="pane reading" aria-label="Reading">
-    <ReadingPane message={openDetail} loading={openLoading} error={openError} />
+    <ReadingPane
+      message={openDetail}
+      loading={openLoading}
+      error={openError}
+      onaction={onMessageAction}
+    />
   </main>
+
+  <UndoBar action={lastAction} onundo={onUndo} ondismiss={() => (lastAction = null)} />
 </div>
 
 <style>
   .shell {
     display: grid;
     grid-template-columns: 260px 360px 1fr;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: auto 1fr auto;
     height: 100vh;
     width: 100vw;
     background: var(--bg);
@@ -391,6 +475,7 @@
 
   .conn-bar {
     grid-column: 1 / -1;
+    grid-row: 1;
     padding: 4px 12px;
     font-size: 11px;
     border-bottom: 1px solid var(--border);
@@ -412,6 +497,11 @@
 
   .pane {
     grid-row: 2;
+  }
+
+  :global(.undo-bar) {
+    grid-column: 1 / -1;
+    grid-row: 3;
   }
 
   .pane {

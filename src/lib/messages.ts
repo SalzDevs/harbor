@@ -55,3 +55,40 @@ export async function openMessage(
 ): Promise<MessageDetail> {
   return invoke<MessageDetail>("open_message", { folderId, messageId });
 }
+
+import type { ActionRecord } from "./types";
+
+export async function setMessageFlags(
+  folderId: string,
+  messageId: string,
+  seen?: boolean,
+  flagged?: boolean,
+): Promise<ActionRecord> {
+  return invoke<ActionRecord>("set_message_flags", { folderId, messageId, seen, flagged });
+}
+
+export async function archiveMessage(
+  folderId: string,
+  messageId: string,
+): Promise<ActionRecord> {
+  return invoke<ActionRecord>("archive_message", { folderId, messageId });
+}
+
+export async function deleteMessage(
+  folderId: string,
+  messageId: string,
+): Promise<ActionRecord> {
+  return invoke<ActionRecord>("delete_message", { folderId, messageId });
+}
+
+export async function moveMessage(
+  folderId: string,
+  messageId: string,
+  destFolderId: string,
+): Promise<ActionRecord> {
+  return invoke<ActionRecord>("move_message", { folderId, messageId, destFolderId });
+}
+
+export async function undoAction(actionId: string): Promise<void> {
+  return invoke("undo_action", { actionId });
+}
