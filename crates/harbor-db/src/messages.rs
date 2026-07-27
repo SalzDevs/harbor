@@ -314,16 +314,22 @@ impl MessageRepo for Db {
 
     fn get_message_body(&self, message_id: &MessageId) -> Result<Option<MessageBody>> {
         let mut stmt = self.conn().prepare(
-            "SELECT text_plain, text_html, text_html_safe, fetched_at
+            "SELECT text_plain, text_html, text_html_safe, fetched_at, attachments_json
              FROM message_bodies WHERE message_id = ?1",
         )?;
         let mut rows = stmt.query([message_id.as_str()])?;
         if let Some(row) = rows.next()? {
+            let attachments_json: Option<String> = row.get(4)?;
+            let attachments = attachments_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
             Ok(Some(MessageBody {
                 text_plain: row.get(0)?,
                 text_html: row.get(1)?,
                 text_html_safe: row.get(2)?,
                 fetched_at: row.get(3)?,
+                attachments,
             }))
         } else {
             Ok(None)
@@ -331,20 +337,23 @@ impl MessageRepo for Db {
     }
 
     fn save_message_body(&self, message_id: &MessageId, body: &MessageBody) -> Result<()> {
+        let attachments_json = serde_json::to_string(&body.attachments).ok();
         self.conn().execute(
-            "INSERT INTO message_bodies (message_id, text_plain, text_html, text_html_safe, fetched_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO message_bodies (message_id, text_plain, text_html, text_html_safe, fetched_at, attachments_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(message_id) DO UPDATE SET
                text_plain = excluded.text_plain,
                text_html = excluded.text_html,
                text_html_safe = excluded.text_html_safe,
-               fetched_at = excluded.fetched_at",
+               fetched_at = excluded.fetched_at,
+               attachments_json = excluded.attachments_json",
             params![
                 message_id.as_str(),
                 body.text_plain,
                 body.text_html,
                 body.text_html_safe,
                 body.fetched_at,
+                attachments_json,
             ],
         )?;
         // Reindex FTS since body content changed.
@@ -375,6 +384,7 @@ impl MessageRepo for Db {
             text_html: None,
             text_html_safe: None,
             fetched_at: 0,
+            attachments: Vec::new(),
         });
         let has_remote = body
             .text_html_safe
@@ -1051,6 +1061,7 @@ mod tests {
             text_html: Some("<p>hello</p>".into()),
             text_html_safe: Some("<p>hello</p>".into()),
             fetched_at: 99,
+            attachments: Vec::new(),
         };
         db.save_message_body(&mid, &body).unwrap();
         let loaded = db.get_message_body(&mid).unwrap().unwrap();
@@ -1087,6 +1098,7 @@ mod tests {
             text_html: None,
             text_html_safe: None,
             fetched_at: 1,
+            attachments: Vec::new(),
         };
         db.save_message_body(&missing[0].0, &body).unwrap();
         let missing2 = db.recent_messages_without_body(&inbox, 10).unwrap();

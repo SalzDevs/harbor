@@ -1,4 +1,5 @@
 use native_tls::TlsConnector;
+use mail_parser::PartType;
 
 use crate::folder::{detect_folder_role, leaf_name, FolderRole};
 use crate::message::{FetchedHeader, MessageFlags};
@@ -186,6 +187,66 @@ pub fn fetch_message_bytes(
     let bytes = fetch_raw_message(&mut session, uid)?;
     logout(session);
     Ok(bytes)
+}
+
+/// Fetch a specific MIME body section (e.g. "2", "3.1") by UID.
+pub fn fetch_body_section(
+    provider: Provider,
+    email: &str,
+    access_token: &str,
+    imap_name: &str,
+    uid: u32,
+    section: &str,
+) -> Result<Vec<u8>> {
+    let (mut session, _) = select_mailbox(provider, email, access_token, imap_name)?;
+    let query = format!("BODY.PEEK[{section}]");
+    let fetches = session.uid_fetch(uid.to_string(), query)?;
+    for fetch in fetches.iter() {
+        // The section data is in the body section; use `body()` for BODY[] or
+        // check via `section()` with the right path.
+        // For BODY[n], imap crate exposes it via body() only for BODY[], so we
+        // need to check the raw fetch items. Fall back to fetching full and
+        // extracting via mail-parser.
+        if let Some(bytes) = fetch.body() {
+            return Ok(bytes.to_vec());
+        }
+    }
+    // Fallback: fetch full message and extract the section via mail-parser.
+    let full = fetch_raw_message(&mut session, uid)?;
+    logout(session);
+    extract_section_via_parser(&full, section)
+}
+
+/// Extract a MIME section from a full message using mail-parser part index.
+fn extract_section_via_parser(raw: &[u8], section: &str) -> Result<Vec<u8>> {
+    let parsed = mail_parser::MessageParser::default().parse(raw)
+        .ok_or_else(|| ImapError::Other("failed to parse message for section extraction".into()))?;
+    
+    // section is like "1", "2.1" — navigate to the part.
+    let indices: Vec<usize> = section
+        .split('.')
+        .filter_map(|s| s.parse::<usize>().ok())
+        .collect();
+
+    if indices.is_empty() {
+        return Err(ImapError::Other(format!("invalid section: {section}")));
+    }
+
+    // IMAP part numbers are 1-based; mail-parser parts are 0-based.
+    // The first part in IMAP is part 1, which maps to parts[0] in mail-parser
+    // (assuming the root is multipart). For non-multipart, part 1 is the whole message.
+    let part_idx = indices[0].saturating_sub(1);
+    if part_idx >= parsed.parts.len() {
+        return Err(ImapError::Other(format!("section {section} not found in message")));
+    }
+
+    let part = &parsed.parts[part_idx];
+    match &part.body {
+        PartType::Binary(bytes) => Ok(bytes.to_vec()),
+        PartType::Text(text) => Ok(text.as_bytes().to_vec()),
+        PartType::Html(text) => Ok(text.as_bytes().to_vec()),
+        _ => Err(ImapError::Other(format!("section {section} has no binary body"))),
+    }
 }
 
 pub fn logout(session: Session) {

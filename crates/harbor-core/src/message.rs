@@ -116,6 +116,21 @@ pub struct MessageBody {
     /// Sanitized HTML safe for sandboxed display (scripts/handlers stripped).
     pub text_html_safe: Option<String>,
     pub fetched_at: i64,
+    /// Attachment metadata parsed from the MIME structure (no payload).
+    pub attachments: Vec<AttachmentInfo>,
+}
+
+/// Metadata for one attachment (no payload stored).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentInfo {
+    /// IMAP BODY section path (e.g. "1", "2.1") for fetching this part.
+    pub section: String,
+    pub filename: String,
+    pub content_type: String,
+    pub size: Option<u32>,
+    /// Whether this part is inline (Content-Disposition: inline).
+    pub is_inline: bool,
 }
 
 /// Full message for the reading pane.

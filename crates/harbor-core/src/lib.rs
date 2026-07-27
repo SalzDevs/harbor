@@ -15,10 +15,10 @@ pub use account::{Account, AccountId, AccountStatus, ParseProviderError, Provide
 pub use connection::{ConnectionKind, ConnectionStatus, FolderMailUpdated};
 pub use folder::{Folder, FolderId, FolderRole};
 pub use message::{
-    ComposeKind, Contact, ConversationListItem, ConversationPage, Draft, FetchedHeader,
-    FolderSyncProgress, FolderSyncResult, FolderSyncState, MessageBody, MessageDetail,
-    MessageFlags, MessageId, MessageListItem, MessageLocation, MessagePage, OutboxItem,
-    OutboxStatus, SearchPage, SearchResult,
+    AttachmentInfo, ComposeKind, Contact, ConversationListItem, ConversationPage, Draft,
+    FetchedHeader, FolderSyncProgress, FolderSyncResult, FolderSyncState, MessageBody,
+    MessageDetail, MessageFlags, MessageId, MessageListItem, MessageLocation, MessagePage,
+    OutboxItem, OutboxStatus, SearchPage, SearchResult,
 };
 pub use mime::{html_has_remote_images, parse_message_bytes, sanitize_html};
 pub use paths::{APP_ID, APP_NAME};

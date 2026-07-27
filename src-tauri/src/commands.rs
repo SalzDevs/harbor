@@ -1,4 +1,4 @@
-use harbor_core::imap::{fetch_message_bytes, list_remote_folders};
+use harbor_core::imap::{fetch_body_section, fetch_message_bytes, list_remote_folders};
 use harbor_core::oauth::{load_oauth_config, sign_in_gmail, sign_in_outlook, OAuthTokenSet};
 use harbor_core::{
     parse_message_bytes, send_message, strings, Account, AccountId, ConnectionStatus,
@@ -603,6 +603,86 @@ fn split_addresses(s: &str) -> Vec<String> {
         .map(|a| a.trim().to_string())
         .filter(|a| !a.is_empty())
         .collect()
+}
+
+// --- Attachments ------------------------------------------------------------
+
+/// Download an attachment by fetching the MIME body section and saving to a
+/// user-chosen path. Returns the path written.
+#[tauri::command]
+pub async fn download_attachment(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    folder_id: String,
+    message_id: String,
+    section: String,
+    filename: String,
+) -> Result<String, String> {
+    let folder_id = FolderId(folder_id);
+    let message_id = MessageId(message_id);
+
+    // Get message location for IMAP fetch.
+    let location = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.get_message_location(&folder_id, &message_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "message not found in folder".to_string())?
+    };
+
+    // Show save dialog.
+    use tauri_plugin_dialog::DialogExt;
+    let file_path = app
+        .dialog()
+        .file()
+        .set_file_name(&filename)
+        .blocking_save_file();
+
+    let Some(file_path) = file_path else {
+        return Err("cancelled".into());
+    };
+
+    // Extract PathBuf from FilePath.
+    let path_buf = match file_path {
+        tauri_plugin_dialog::FilePath::Path(p) => p,
+        tauri_plugin_dialog::FilePath::Url(u) => {
+            u.to_file_path()
+                .map_err(|_| "invalid file URL".to_string())?
+        }
+    };
+
+    // Fetch the body section via IMAP.
+    let (provider, email) = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let account = db
+            .get_account(&location.account_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "account not found".to_string())?;
+        let email = account
+            .email
+            .ok_or_else(|| "account has no email".to_string())?;
+        (account.provider, email)
+    };
+
+    let fresh = ensure_fresh_access_token(&state.db, &location.account_id)?;
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        fetch_body_section(
+            provider,
+            &email,
+            &fresh.access_token,
+            &location.imap_name,
+            location.uid,
+            &section,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    // Write to the chosen path.
+    let path = path_buf.display().to_string();
+    std::fs::write(&path_buf, &bytes).map_err(|e| e.to_string())?;
+
+    Ok(path)
 }
 
 fn start_idle_watch(app: &AppHandle, state: &State<'_, AppState>, account_id: &AccountId) {

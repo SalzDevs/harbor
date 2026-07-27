@@ -3,16 +3,20 @@
 use ammonia::Builder;
 use mail_parser::{MessageParser, MimeHeaders, PartType};
 
-use crate::message::MessageBody;
+use crate::message::{AttachmentInfo, MessageBody};
 
-/// Parse a full RFC822 message into plain/html bodies and a sanitized HTML form.
+/// Parse a full RFC822 message into plain/html bodies, sanitized HTML, and attachment metadata.
 pub fn parse_message_bytes(raw: &[u8]) -> MessageBody {
     let parsed = MessageParser::default().parse(raw);
-    let (text_plain, text_html) = match parsed {
-        Some(msg) => extract_bodies(&msg),
+    let (text_plain, text_html, attachments) = match parsed {
+        Some(msg) => {
+            let (plain, html) = extract_bodies(&msg);
+            let atts = extract_attachments(&msg);
+            (plain, html, atts)
+        }
         None => {
             let fallback = String::from_utf8_lossy(raw).into_owned();
-            (Some(fallback), None)
+            (Some(fallback), None, Vec::new())
         }
     };
 
@@ -23,6 +27,7 @@ pub fn parse_message_bytes(raw: &[u8]) -> MessageBody {
         text_html,
         text_html_safe,
         fetched_at: now_unix(),
+        attachments,
     }
 }
 
@@ -70,6 +75,79 @@ fn extract_bodies(msg: &mail_parser::Message<'_>) -> (Option<String>, Option<Str
     // If only HTML, leave plain empty (UI will use HTML path).
     // If only plain, UI uses plain path.
     (plain, html)
+}
+
+/// Extract attachment metadata from MIME parts. Non-text/plain and non-text/html
+/// parts with a filename or non-inline disposition are treated as attachments.
+fn extract_attachments(msg: &mail_parser::Message<'_>) -> Vec<AttachmentInfo> {
+    let mut out = Vec::new();
+    for (idx, part) in msg.parts.iter().enumerate() {
+        // Skip text/plain and text/html (those are body parts, not attachments).
+        let ct = part
+            .content_type()
+            .map(|c| {
+                format!(
+                    "{}/{}",
+                    c.c_type.as_ref(),
+                    c.c_subtype.as_ref().map(|s| s.as_ref()).unwrap_or("")
+                )
+            })
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
+        if matches!(&part.body, PartType::Text(_) | PartType::Html(_)) {
+            // Text parts are body, not attachments — unless they have a filename.
+            let has_filename = part
+                .attachment_name()
+                .is_some();
+            if !has_filename {
+                continue;
+            }
+        }
+
+        // Skip empty binary parts.
+        if matches!(&part.body, PartType::InlineBinary(_)) && part.attachment_name().is_none() {
+            continue;
+        }
+
+        let filename = part
+            .attachment_name()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("part-{}", idx + 1));
+
+        let content_type = part
+            .content_type()
+            .map(|c| {
+                format!(
+                    "{}/{}",
+                    c.c_type.as_ref(),
+                    c.c_subtype.as_ref().map(|s| s.as_ref()).unwrap_or("")
+                )
+            })
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+
+        let is_inline = part
+            .content_disposition()
+            .map(|d| d.c_type.as_ref().eq_ignore_ascii_case("inline"))
+            .unwrap_or(false);
+
+        // Size: for binary parts, use the body length; for text, the string length.
+        let size = match &part.body {
+            PartType::Binary(bytes) => Some(bytes.len() as u32),
+            PartType::Text(text) => Some(text.len() as u32),
+            PartType::Html(text) => Some(text.len() as u32),
+            _ => None,
+        };
+
+        out.push(AttachmentInfo {
+            section: (idx + 1).to_string(),
+            filename,
+            content_type,
+            size,
+            is_inline,
+        });
+    }
+    out
 }
 
 /// Strip scripts/handlers; keep structure. Remote images left in markup so UI can gate them.

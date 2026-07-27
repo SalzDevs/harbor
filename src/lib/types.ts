@@ -56,6 +56,15 @@ export type MessageBody = {
   textHtml: string | null;
   textHtmlSafe: string | null;
   fetchedAt: number;
+  attachments: AttachmentInfo[];
+};
+
+export type AttachmentInfo = {
+  section: string;
+  filename: string;
+  contentType: string;
+  size: number | null;
+  isInline: boolean;
 };
 
 export type MessageDetail = {

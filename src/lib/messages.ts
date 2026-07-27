@@ -131,3 +131,19 @@ export async function searchMessages(
 ): Promise<SearchPage> {
   return invoke<SearchPage>("search_messages", { accountId, query, limit });
 }
+
+export async function downloadAttachment(
+  folderId: string,
+  messageId: string,
+  section: string,
+  filename: string,
+): Promise<string> {
+  return invoke<string>("download_attachment", { folderId, messageId, section, filename });
+}
+
+export function formatFileSize(bytes: number | null): string {
+  if (!bytes) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}

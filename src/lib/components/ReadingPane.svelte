@@ -1,11 +1,13 @@
 <script lang="ts">
   import {
+    downloadAttachment,
+    formatFileSize,
     formatMessageDate,
     messageFrom,
     messageSubject,
   } from "$lib/messages";
   import { strings } from "$lib/strings";
-  import type { MessageDetail } from "$lib/types";
+  import type { AttachmentInfo, MessageDetail } from "$lib/types";
 
   type Props = {
     message: MessageDetail | null;
@@ -17,6 +19,29 @@
   };
 
   let { message, loading = false, error = null, onaction }: Props = $props();
+
+  let downloadingSection = $state<string | null>(null);
+  let downloadError = $state<string | null>(null);
+
+  const attachments = $derived(
+    message?.body.attachments.filter((a) => !a.isInline) ?? [],
+  );
+
+  async function onDownload(att: AttachmentInfo) {
+    if (!message) return;
+    downloadingSection = att.section;
+    downloadError = null;
+    try {
+      await downloadAttachment(message.folderId, message.id, att.section, att.filename);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg !== "cancelled") {
+        downloadError = msg;
+      }
+    } finally {
+      downloadingSection = null;
+    }
+  }
 
   let loadImages = $state(false);
 
@@ -104,6 +129,28 @@ pre,code{white-space:pre-wrap;word-break:break-word}
           <button type="button" class="btn" onclick={() => (loadImages = true)}>
             {strings.loadImages}
           </button>
+        </div>
+      {/if}
+      {#if attachments.length > 0}
+        <div class="attachments">
+          {#each attachments as att (att.section)}
+            <button
+              type="button"
+              class="att-item"
+              disabled={downloadingSection === att.section}
+              onclick={() => onDownload(att)}
+            >
+              <span class="att-icon">📎</span>
+              <span class="att-name">{att.filename}</span>
+              {#if att.size}<span class="att-size">{formatFileSize(att.size)}</span>{/if}
+              {#if downloadingSection === att.section}
+                <span class="att-status">…</span>
+              {/if}
+            </button>
+          {/each}
+          {#if downloadError}
+            <p class="att-error">{downloadError}</p>
+          {/if}
         </div>
       {/if}
     </header>
@@ -238,6 +285,58 @@ pre,code{white-space:pre-wrap;word-break:break-word}
 
   .btn:hover {
     border-color: var(--accent);
+  }
+
+  .attachments {
+    margin-top: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .att-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-pane);
+    color: var(--text);
+    padding: 6px 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .att-item:hover:not(:disabled) {
+    border-color: var(--accent);
+  }
+
+  .att-item:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  .att-icon {
+    font-size: 14px;
+  }
+
+  .att-name {
+    font-weight: 500;
+  }
+
+  .att-size {
+    color: var(--text-muted);
+  }
+
+  .att-status {
+    color: var(--accent);
+  }
+
+  .att-error {
+    width: 100%;
+    margin: 4px 0 0;
+    color: #f85149;
+    font-size: 12px;
   }
 
   .html-frame {

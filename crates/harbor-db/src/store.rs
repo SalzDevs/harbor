@@ -176,6 +176,10 @@ CREATE TABLE IF NOT EXISTS contacts (
 CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(name);
 "#;
 
+const MIGRATION_V9: &str = r#"
+ALTER TABLE message_bodies ADD COLUMN attachments_json TEXT;
+"#;
+
 pub struct Db {
     conn: Connection,
     path: PathBuf,
@@ -291,6 +295,17 @@ impl Db {
         if current < 8 {
             self.conn.execute_batch(MIGRATION_V8)?;
             self.mark_version(8)?;
+        }
+        if current < 9 {
+            let has_att: bool = self.conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('message_bodies') WHERE name = 'attachments_json'",
+                [],
+                |row| row.get::<_, i64>(0).map(|n| n > 0),
+            )?;
+            if !has_att {
+                self.conn.execute_batch(MIGRATION_V9)?;
+            }
+            self.mark_version(9)?;
         }
 
         Ok(())
