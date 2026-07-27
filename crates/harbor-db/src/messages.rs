@@ -48,6 +48,14 @@ pub trait MessageRepo {
         folder_id: &FolderId,
         message_id: &MessageId,
     ) -> Result<Option<MessageDetail>>;
+
+    /// Newest messages in a folder that still have no cached body.
+    /// Returns (message_id, uid) pairs ordered newest first.
+    fn recent_messages_without_body(
+        &self,
+        folder_id: &FolderId,
+        limit: u32,
+    ) -> Result<Vec<(MessageId, u32)>>;
 }
 
 impl MessageRepo for Db {
@@ -320,6 +328,36 @@ impl MessageRepo for Db {
             has_remote_images: has_remote,
         }))
     }
+
+    fn recent_messages_without_body(
+        &self,
+        folder_id: &FolderId,
+        limit: u32,
+    ) -> Result<Vec<(MessageId, u32)>> {
+        let mut stmt = self.conn().prepare(
+            "SELECT m.id, mf.uid
+             FROM message_folders mf
+             JOIN messages m ON m.id = mf.message_id
+             LEFT JOIN message_bodies b ON b.message_id = m.id
+             WHERE mf.folder_id = ?1 AND b.message_id IS NULL
+             ORDER BY m.date_unix DESC, mf.uid DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![folder_id.as_str(), limit as i64],
+            |row| {
+                Ok((
+                    MessageId(row.get::<_, String>(0)?),
+                    row.get::<_, i64>(1)? as u32,
+                ))
+            },
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
 }
 
 fn resolve_or_insert_message(
@@ -585,5 +623,37 @@ mod tests {
         let loc = db.get_message_location(&inbox, &mid).unwrap().unwrap();
         assert_eq!(loc.uid, 1);
         assert_eq!(loc.imap_name, "INBOX");
+    }
+
+    #[test]
+    fn recent_messages_without_body_orders_newest_first() {
+        let (db, account_id, inbox, _) = setup2();
+        db.upsert_fetched_headers(
+            &account_id,
+            &inbox,
+            &[
+                header(1, Some("a"), "old", 100),
+                header(2, Some("b"), "new", 200),
+                header(3, Some("c"), "newest", 300),
+            ],
+        )
+        .unwrap();
+
+        let missing = db.recent_messages_without_body(&inbox, 10).unwrap();
+        assert_eq!(missing.len(), 3);
+        // Newest first by date_unix DESC.
+        assert_eq!(missing[0].1, 3);
+
+        // Save body for the newest; it should drop from the list.
+        let body = MessageBody {
+            text_plain: Some("x".into()),
+            text_html: None,
+            text_html_safe: None,
+            fetched_at: 1,
+        };
+        db.save_message_body(&missing[0].0, &body).unwrap();
+        let missing2 = db.recent_messages_without_body(&inbox, 10).unwrap();
+        assert_eq!(missing2.len(), 2);
+        assert_eq!(missing2[0].1, 2);
     }
 }

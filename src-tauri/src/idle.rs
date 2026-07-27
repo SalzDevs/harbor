@@ -223,6 +223,14 @@ fn sync_and_notify(
             account_id: account_id.as_str().to_string(),
         },
     );
+    // Background-prefetch newest INBOX bodies; does not block IDLE.
+    crate::sync_headers::spawn_prefetch_inbox_bodies(
+        app.clone(),
+        Arc::clone(db),
+        folder_id.clone(),
+        // No shared stop here; prefetch self-limits and is short-lived.
+        Arc::new(AtomicBool::new(false)),
+    );
     Ok(())
 }
 

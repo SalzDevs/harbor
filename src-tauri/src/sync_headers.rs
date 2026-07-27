@@ -1,21 +1,28 @@
 //! Shared folder header sync used by commands and the IDLE worker.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use harbor_core::imap::{
-    fetch_headers_for_uids, logout, search_all_uids, search_uids_after, select_mailbox,
+    fetch_headers_for_uids, fetch_raw_message, logout, search_all_uids, search_uids_after,
+    select_mailbox,
 };
 use harbor_core::oauth::{
     gmail_token_url, load_oauth_config, outlook_token_url, refresh_access_token, OAuthClientConfig,
     TokenRefreshRequest,
 };
 use harbor_core::{
-    AccountId, FolderId, FolderSyncProgress, FolderSyncResult, FolderSyncState, Provider,
+    parse_message_bytes, AccountId, FolderId, FolderRole, FolderSyncProgress, FolderSyncResult,
+    FolderSyncState, MessageId, Provider,
 };
 use harbor_db::{AccountRepo, FolderRepo, MessageRepo, TokenRepo, Db};
 use tauri::{AppHandle, Emitter};
 
 const HEADER_BATCH: usize = 150;
+const PREFETCH_RECENT_LIMIT: u32 = 150;
+const PREFETCH_BATCH: usize = 10;
 
 pub struct FreshToken {
     pub access_token: String,
@@ -205,4 +212,130 @@ pub fn sync_folder_headers_inner(
         fetched,
         total,
     })
+}
+
+/// Background-prefetch bodies for the newest N INBOX messages that lack a cached body.
+/// Runs on its own thread so it never blocks interactive open_message. No-ops when offline
+/// (caller controls via the `stop` flag and only invokes while online).
+pub fn spawn_prefetch_inbox_bodies(
+    app: AppHandle,
+    db: Arc<Mutex<Db>>,
+    folder_id: FolderId,
+    stop: Arc<AtomicBool>,
+) {
+    thread::spawn(move || {
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let _ = prefetch_inbox_bodies(&app, &db, &folder_id, &stop);
+    });
+}
+
+fn prefetch_inbox_bodies(
+    app: &AppHandle,
+    db: &Arc<Mutex<Db>>,
+    folder_id: &FolderId,
+    stop: &AtomicBool,
+) -> Result<(), String> {
+    let (account_id, provider, email, imap_name, is_inbox) = {
+        let db = db.lock().map_err(|e| e.to_string())?;
+        let folder = db
+            .get_folder(folder_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("folder not found: {}", folder_id.as_str()))?;
+        let account = db
+            .get_account(&folder.account_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "account not found".to_string())?;
+        if account.status != harbor_core::AccountStatus::Connected {
+            return Err("account is not connected".into());
+        }
+        let email = account
+            .email
+            .ok_or_else(|| "account has no email".to_string())?;
+        (
+            folder.account_id,
+            account.provider,
+            email,
+            folder.imap_name,
+            folder.role == FolderRole::Inbox,
+        )
+    };
+
+    if !is_inbox {
+        return Ok(()); // v1: only prefetch INBOX
+    }
+
+    let targets: Vec<(MessageId, u32)> = {
+        let db = db.lock().map_err(|e| e.to_string())?;
+        db.recent_messages_without_body(folder_id, PREFETCH_RECENT_LIMIT)
+            .map_err(|e| e.to_string())?
+    };
+
+    if targets.is_empty() {
+        return Ok(());
+    }
+
+    let fresh = ensure_fresh_access_token(db, &account_id)?;
+    let (mut session, _) = select_mailbox(provider, &email, &fresh.access_token, &imap_name)
+        .map_err(|e| e.to_string())?;
+
+    let mut done = 0u32;
+    let total = targets.len() as u32;
+    let _ = app.emit(
+        "folder-prefetch-progress",
+        PrefetchProgress {
+            folder_id: folder_id.clone(),
+            fetched: 0,
+            total,
+        },
+    );
+
+    for (message_id, uid) in targets {
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
+        match fetch_raw_message(&mut session, uid) {
+            Ok(raw) => {
+                let body = parse_message_bytes(&raw);
+                if let Ok(db) = db.lock() {
+                    let _ = db.save_message_body(&message_id, &body);
+                }
+            }
+            Err(e) => {
+                // Skip a single failure; keep going for the rest.
+                eprintln!("prefetch uid {uid} failed: {e}");
+            }
+        }
+        done += 1;
+        if done % PREFETCH_BATCH as u32 == 0 || done == total {
+            let _ = app.emit(
+                "folder-prefetch-progress",
+                PrefetchProgress {
+                    folder_id: folder_id.clone(),
+                    fetched: done,
+                    total,
+                },
+            );
+        }
+    }
+
+    logout(session);
+    let _ = app.emit(
+        "folder-prefetch-done",
+        PrefetchProgress {
+            folder_id: folder_id.clone(),
+            fetched: done,
+            total,
+        },
+    );
+    Ok(())
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PrefetchProgress {
+    folder_id: FolderId,
+    fetched: u32,
+    total: u32,
 }

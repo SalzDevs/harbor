@@ -192,7 +192,15 @@ pub fn sync_folder_headers(
     folder_id: String,
 ) -> Result<FolderSyncResult, String> {
     let folder_id = FolderId(folder_id);
-    sync_folder_headers_inner(Some(&app), &state.db, &folder_id)
+    let result = sync_folder_headers_inner(Some(&app), &state.db, &folder_id)?;
+    // Kick a background prefetch of recent INBOX bodies (no-op for non-INBOX).
+    crate::sync_headers::spawn_prefetch_inbox_bodies(
+        app,
+        std::sync::Arc::clone(&state.db),
+        folder_id.clone(),
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    );
+    Ok(result)
 }
 
 #[tauri::command]
