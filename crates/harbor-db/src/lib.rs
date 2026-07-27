@@ -1,6 +1,7 @@
 //! Local persistence for Harbor. Schema and queries live here.
 
 mod accounts;
+mod compose;
 mod error;
 mod folders;
 mod messages;
@@ -9,6 +10,7 @@ mod store;
 mod tokens;
 
 pub use accounts::AccountRepo;
+pub use compose::ComposeRepo;
 pub use error::{DbError, Result};
 pub use folders::FolderRepo;
 pub use messages::MessageRepo;

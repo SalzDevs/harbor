@@ -130,6 +130,52 @@ USING fts5(
 );
 "#;
 
+const MIGRATION_V8: &str = r#"
+CREATE TABLE IF NOT EXISTS drafts (
+    id TEXT PRIMARY KEY NOT NULL,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    to_list TEXT NOT NULL DEFAULT '',
+    cc_list TEXT NOT NULL DEFAULT '',
+    bcc_list TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    body_text TEXT NOT NULL DEFAULT '',
+    body_html TEXT,
+    in_reply_to TEXT,
+    references_text TEXT,
+    signature TEXT,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_drafts_account ON drafts(account_id);
+
+CREATE TABLE IF NOT EXISTS outbox (
+    id TEXT PRIMARY KEY NOT NULL,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    to_list TEXT NOT NULL DEFAULT '',
+    cc_list TEXT NOT NULL DEFAULT '',
+    bcc_list TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    body_text TEXT NOT NULL DEFAULT '',
+    body_html TEXT,
+    in_reply_to TEXT,
+    references_text TEXT,
+    status TEXT NOT NULL DEFAULT 'queued',
+    error TEXT,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_account_status ON outbox(account_id, status);
+
+CREATE TABLE IF NOT EXISTS contacts (
+    address TEXT PRIMARY KEY NOT NULL,
+    name TEXT,
+    last_seen INTEGER NOT NULL,
+    times_seen INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(name);
+"#;
+
 pub struct Db {
     conn: Connection,
     path: PathBuf,
@@ -241,6 +287,10 @@ impl Db {
         if current < 7 {
             self.conn.execute_batch(MIGRATION_V7)?;
             self.mark_version(7)?;
+        }
+        if current < 8 {
+            self.conn.execute_batch(MIGRATION_V8)?;
+            self.mark_version(8)?;
         }
 
         Ok(())

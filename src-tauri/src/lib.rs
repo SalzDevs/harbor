@@ -43,6 +43,13 @@ pub fn run() {
             commands::get_view_mode,
             commands::set_view_mode,
             commands::search_messages,
+            commands::list_drafts,
+            commands::save_draft,
+            commands::delete_draft,
+            commands::list_outbox,
+            commands::send_mail,
+            commands::flush_outbox,
+            commands::search_contacts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

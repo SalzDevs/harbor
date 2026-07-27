@@ -1,16 +1,17 @@
 use harbor_core::imap::{fetch_message_bytes, list_remote_folders};
 use harbor_core::oauth::{load_oauth_config, sign_in_gmail, sign_in_outlook, OAuthTokenSet};
 use harbor_core::{
-    parse_message_bytes, strings, Account, AccountId, ConnectionStatus, ConversationPage, Folder,
-    FolderId, FolderRole, FolderSyncResult, MessageDetail, MessageFlags, MessageId, MessagePage,
-    Provider, SearchPage,
+    parse_message_bytes, send_message, strings, Account, AccountId, ConnectionStatus,
+    ConversationPage, Draft, Folder, FolderId, FolderRole, FolderSyncResult, MessageDetail,
+    MessageFlags, MessageId, MessagePage, OutboxItem, OutboxStatus, OutgoingMessage, Provider,
+    SearchPage,
 };
-use harbor_db::{AccountRepo, Db, FolderRepo, MessageRepo, TokenRepo};
-use tauri::{AppHandle, State};
+use harbor_db::{AccountRepo, ComposeRepo, Db, FolderRepo, MessageRepo, TokenRepo};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::actions::{apply_deferred_move, apply_flag_change, ActionKind, ActionRecord};
 use crate::state::AppState;
-use crate::sync_headers::{ensure_fresh_access_token, sync_folder_headers_inner};
+use crate::sync_headers::{ensure_fresh_access_token, now_unix, sync_folder_headers_inner};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -372,6 +373,236 @@ pub fn search_messages(
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.search_messages(&id, &query, limit)
         .map_err(|e| e.to_string())
+}
+
+// --- Compose / drafts / outbox / contacts ----------------------------------
+
+#[tauri::command]
+pub fn list_drafts(state: State<'_, AppState>, account_id: String) -> Result<Vec<Draft>, String> {
+    let id = AccountId(account_id);
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.list_drafts(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_draft(
+    state: State<'_, AppState>,
+    account_id: String,
+    draft: Draft,
+) -> Result<(), String> {
+    let id = AccountId(account_id);
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.save_draft(&id, &draft).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_draft(state: State<'_, AppState>, draft_id: String) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.delete_draft(&draft_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_outbox(
+    state: State<'_, AppState>,
+    account_id: String,
+) -> Result<Vec<OutboxItem>, String> {
+    let id = AccountId(account_id);
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.list_outbox(&id).map_err(|e| e.to_string())
+}
+
+/// Send or queue a message. If online, sends immediately; if offline, queues in outbox.
+#[tauri::command]
+pub fn send_mail(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account_id: String,
+    to: String,
+    cc: String,
+    bcc: String,
+    subject: String,
+    body_text: String,
+    body_html: Option<String>,
+    in_reply_to: Option<String>,
+    references: Option<String>,
+) -> Result<(), String> {
+    let account_id = AccountId(account_id);
+    let now = now_unix();
+
+    let (provider, email, display_name) = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let account = db
+            .get_account(&account_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "account not found".to_string())?;
+        let email = account
+            .email
+            .clone()
+            .ok_or_else(|| "account has no email".to_string())?;
+        (account.provider, email, account.display_name)
+    };
+
+    // Check connection status — if offline, queue.
+    let is_online = {
+        let status = state
+            .connection_status
+            .lock()
+            .map_err(|e| e.to_string())?;
+        status.kind == harbor_core::ConnectionKind::Online
+    };
+
+    if !is_online {
+        let item = OutboxItem {
+            id: uuid::Uuid::new_v4().to_string(),
+            account_id: account_id.clone(),
+            to_list: to,
+            cc_list: cc,
+            bcc_list: bcc,
+            subject,
+            body_text,
+            body_html,
+            in_reply_to,
+            references,
+            status: OutboxStatus::Queued,
+            error: None,
+            created_at: now,
+        };
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.enqueue_outbox(&account_id, &item)
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    // Online — try to send immediately.
+    let fresh = ensure_fresh_access_token(&state.db, &account_id)?;
+    let outgoing = OutgoingMessage {
+        from_email: email.clone(),
+        from_name: display_name,
+        to: split_addresses(&to),
+        cc: split_addresses(&cc),
+        bcc: split_addresses(&bcc),
+        subject,
+        body_text,
+        body_html,
+        in_reply_to,
+        references,
+    };
+
+    match send_message(provider, &email, &fresh.access_token, &outgoing) {
+        Ok(()) => {
+            // Record contacts from recipients.
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            for addr in &outgoing.to {
+                let _ = db.record_contact(addr, None);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            // Queue on failure so user can retry.
+            let item = OutboxItem {
+                id: uuid::Uuid::new_v4().to_string(),
+                account_id: account_id.clone(),
+                to_list: to,
+                cc_list: cc,
+                bcc_list: bcc,
+                subject: outgoing.subject,
+                body_text: outgoing.body_text,
+                body_html: outgoing.body_html,
+                in_reply_to: outgoing.in_reply_to,
+                references: outgoing.references,
+                status: OutboxStatus::Failed,
+                error: Some(e.to_string()),
+                created_at: now,
+            };
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            db.enqueue_outbox(&account_id, &item)
+                .map_err(|e| e.to_string())?;
+            let _ = app.emit("outbox-updated", ());
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Flush all queued/failed outbox items when back online.
+#[tauri::command]
+pub fn flush_outbox(app: AppHandle, state: State<'_, AppState>) -> Result<u32, String> {
+    let queued = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.list_queued_outbox().map_err(|e| e.to_string())?
+    };
+
+    let mut sent = 0u32;
+    for item in queued {
+        let (provider, email) = {
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            let account = db
+                .get_account(&item.account_id)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "account not found".to_string())?;
+            let email = account
+                .email
+                .clone()
+                .ok_or_else(|| "account has no email".to_string())?;
+            (account.provider, email)
+        };
+
+        {
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            let _ = db.update_outbox_status(&item.id, OutboxStatus::Sending, None);
+        }
+
+        let fresh = ensure_fresh_access_token(&state.db, &item.account_id)?;
+        let outgoing = OutgoingMessage {
+            from_email: email.clone(),
+            from_name: None,
+            to: split_addresses(&item.to_list),
+            cc: split_addresses(&item.cc_list),
+            bcc: split_addresses(&item.bcc_list),
+            subject: item.subject,
+            body_text: item.body_text,
+            body_html: item.body_html,
+            in_reply_to: item.in_reply_to,
+            references: item.references,
+        };
+
+        match send_message(provider, &email, &fresh.access_token, &outgoing) {
+            Ok(()) => {
+                let db = state.db.lock().map_err(|e| e.to_string())?;
+                let _ = db.update_outbox_status(&item.id, OutboxStatus::Sent, None);
+                let _ = db.delete_outbox(&item.id);
+                for addr in &outgoing.to {
+                    let _ = db.record_contact(addr, None);
+                }
+                sent += 1;
+            }
+            Err(e) => {
+                let db = state.db.lock().map_err(|e| e.to_string())?;
+                let _ = db.update_outbox_status(&item.id, OutboxStatus::Failed, Some(&e.to_string()));
+            }
+        }
+    }
+
+    let _ = app.emit("outbox-updated", ());
+    Ok(sent)
+}
+
+#[tauri::command]
+pub fn search_contacts(
+    state: State<'_, AppState>,
+    query: String,
+    limit: Option<u32>,
+) -> Result<Vec<harbor_core::Contact>, String> {
+    let limit = limit.unwrap_or(10).min(50);
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.search_contacts(&query, limit)
+        .map_err(|e| e.to_string())
+}
+
+fn split_addresses(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty())
+        .collect()
 }
 
 fn start_idle_watch(app: &AppHandle, state: &State<'_, AppState>, account_id: &AccountId) {

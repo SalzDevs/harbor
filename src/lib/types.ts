@@ -111,6 +111,48 @@ export type SearchPage = {
   query: string;
 };
 
+export type ComposeKind = "new" | "reply" | "replyAll" | "forward";
+
+export type Draft = {
+  id: string;
+  accountId: string;
+  toList: string;
+  ccList: string;
+  bccList: string;
+  subject: string;
+  bodyText: string;
+  bodyHtml: string | null;
+  inReplyTo: string | null;
+  references: string | null;
+  signature: string | null;
+  updatedAt: number;
+};
+
+export type OutboxStatus = "queued" | "sending" | "sent" | "failed";
+
+export type OutboxItem = {
+  id: string;
+  accountId: string;
+  toList: string;
+  ccList: string;
+  bccList: string;
+  subject: string;
+  bodyText: string;
+  bodyHtml: string | null;
+  inReplyTo: string | null;
+  references: string | null;
+  status: OutboxStatus;
+  error: string | null;
+  createdAt: number;
+};
+
+export type Contact = {
+  address: string;
+  name: string | null;
+  lastSeen: number;
+  timesSeen: number;
+};
+
 export type FolderSyncProgress = {
   folderId: string;
   fetched: number;

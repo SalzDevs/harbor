@@ -184,3 +184,91 @@ pub struct SearchPage {
     pub total: u32,
     pub query: String,
 }
+
+// --- Compose / drafts / outbox / contacts ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ComposeKind {
+    New,
+    Reply,
+    ReplyAll,
+    Forward,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutboxStatus {
+    Queued,
+    Sending,
+    Sent,
+    Failed,
+}
+
+impl OutboxStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Sending => "sending",
+            Self::Sent => "sent",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl std::str::FromStr for OutboxStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "queued" => Ok(Self::Queued),
+            "sending" => Ok(Self::Sending),
+            "sent" => Ok(Self::Sent),
+            "failed" => Ok(Self::Failed),
+            other => Err(format!("unknown outbox status: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Draft {
+    pub id: String,
+    pub account_id: AccountId,
+    pub to_list: String,
+    pub cc_list: String,
+    pub bcc_list: String,
+    pub subject: String,
+    pub body_text: String,
+    pub body_html: Option<String>,
+    pub in_reply_to: Option<String>,
+    pub references: Option<String>,
+    pub signature: Option<String>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutboxItem {
+    pub id: String,
+    pub account_id: AccountId,
+    pub to_list: String,
+    pub cc_list: String,
+    pub bcc_list: String,
+    pub subject: String,
+    pub body_text: String,
+    pub body_html: Option<String>,
+    pub in_reply_to: Option<String>,
+    pub references: Option<String>,
+    pub status: OutboxStatus,
+    pub error: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Contact {
+    pub address: String,
+    pub name: Option<String>,
+    pub last_seen: i64,
+    pub times_seen: u32,
+}

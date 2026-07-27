@@ -11,6 +11,7 @@
   } from "$lib/accounts";
   import MessageList from "$lib/components/MessageList.svelte";
   import ConversationList from "$lib/components/ConversationList.svelte";
+  import ComposePane from "$lib/components/ComposePane.svelte";
   import ReadingPane from "$lib/components/ReadingPane.svelte";
   import SearchResults from "$lib/components/SearchResults.svelte";
   import UndoBar from "$lib/components/UndoBar.svelte";
@@ -19,6 +20,7 @@
     getConnectionStatus,
     watchAccount,
   } from "$lib/connection";
+  import { flushOutbox } from "$lib/compose";
   import { folderLabel, listFolders, syncFolders } from "$lib/folders";
   import {
     archiveMessage,
@@ -81,6 +83,10 @@
   let searching = $state(false);
   let searchActive = $state(false);
   let searchToken = 0;
+  let composing = $state(false);
+  let composeReplyTo = $state<MessageDetail | null>(null);
+  let composeReplyAll = $state(false);
+  let composeForward = $state(false);
   let headerSyncToken = 0;
   let openToken = 0;
 
@@ -108,7 +114,12 @@
     unlistenStatus = await listen<ConnectionStatus>(
       "connection-status",
       (event) => {
+        const prev = connection;
         connection = event.payload;
+        // Flush outbox when transitioning to online.
+        if (prev?.kind !== "online" && event.payload.kind === "online") {
+          void flushOutbox().catch(() => undefined);
+        }
       },
     );
     unlistenMail = await listen<FolderMailUpdated>(
@@ -418,6 +429,32 @@
     }
   }
 
+  function onComposeNew() {
+    composeReplyTo = null;
+    composeReplyAll = false;
+    composeForward = false;
+    composing = true;
+  }
+
+  function onComposeReply(replyAll: boolean) {
+    composeReplyTo = openDetail;
+    composeReplyAll = replyAll;
+    composeForward = false;
+    composing = true;
+  }
+
+  function onComposeForward() {
+    composeReplyTo = openDetail;
+    composeReplyAll = false;
+    composeForward = true;
+    composing = true;
+  }
+
+  function onCloseCompose() {
+    composing = false;
+    composeReplyTo = null;
+  }
+
   async function onMessageAction(
     kind: "toggleRead" | "toggleStar" | "archive" | "delete",
   ) {
@@ -533,6 +570,11 @@
     {/if}
 
     <div class="add-row">
+      {#if activeAccount}
+        <button type="button" class="btn compose-btn" disabled={busy} onclick={onComposeNew}>
+          ✎ Compose
+        </button>
+      {/if}
       <button type="button" class="btn" disabled={busy} onclick={() => onAdd("gmail")}>
         {strings.addGmail}
       </button>
@@ -616,12 +658,34 @@
   </section>
 
   <main class="pane reading" aria-label="Reading">
-    <ReadingPane
-      message={openDetail}
-      loading={openLoading}
-      error={openError}
-      onaction={onMessageAction}
-    />
+    {#if composing && activeAccount}
+      <ComposePane
+        accountId={activeAccount.id}
+        fromEmail={activeAccount.email ?? ""}
+        fromName={activeAccount.displayName}
+        replyTo={composeReplyTo}
+        replyAll={composeReplyAll}
+        forward={composeForward}
+        onclose={onCloseCompose}
+        onsent={() => {
+          /* could refresh sent folder */
+        }}
+      />
+    {:else}
+      <ReadingPane
+        message={openDetail}
+        loading={openLoading}
+        error={openError}
+        onaction={onMessageAction}
+      />
+      {#if openDetail && !composing}
+        <div class="reply-bar">
+          <button type="button" class="tool" onclick={() => onComposeReply(false)}>↩ Reply</button>
+          <button type="button" class="tool" onclick={() => onComposeReply(true)}>↩↩ Reply All</button>
+          <button type="button" class="tool" onclick={onComposeForward}>→ Forward</button>
+        </div>
+      {/if}
+    {/if}
   </main>
 
   <UndoBar action={lastAction} onundo={onUndo} ondismiss={() => (lastAction = null)} />
@@ -843,6 +907,35 @@
   .btn:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  .compose-btn {
+    border-color: var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .reply-bar {
+    display: flex;
+    gap: 4px;
+    padding: 6px 12px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-elevated);
+    flex-shrink: 0;
+  }
+
+  .reply-bar .tool {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: 6px;
+  }
+
+  .reply-bar .tool:hover {
+    border-color: var(--accent);
+    color: var(--text);
   }
 
   .hint {
