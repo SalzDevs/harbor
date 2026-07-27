@@ -169,3 +169,18 @@ pub struct ConversationPage {
     pub offset: u32,
     pub limit: u32,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    pub message: MessageListItem,
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchPage {
+    pub results: Vec<SearchResult>,
+    pub total: u32,
+    pub query: String,
+}

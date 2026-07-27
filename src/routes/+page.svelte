@@ -12,6 +12,7 @@
   import MessageList from "$lib/components/MessageList.svelte";
   import ConversationList from "$lib/components/ConversationList.svelte";
   import ReadingPane from "$lib/components/ReadingPane.svelte";
+  import SearchResults from "$lib/components/SearchResults.svelte";
   import UndoBar from "$lib/components/UndoBar.svelte";
   import {
     connectionLabel,
@@ -27,6 +28,7 @@
     listMessages,
     listThreadMessages,
     openMessage,
+    searchMessages,
     setViewMode,
     setMessageFlags,
     syncFolderHeaders,
@@ -45,6 +47,8 @@
     MessageDetail,
     MessageListItem,
     Provider,
+    SearchPage,
+    SearchResult,
     ViewMode,
   } from "$lib/types";
 
@@ -71,6 +75,12 @@
   let conversationTotal = $state(0);
   let selectedThreadRoot = $state<string | null>(null);
   let threadMessages = $state<MessageListItem[]>([]);
+  let searchQuery = $state("");
+  let searchResults = $state<SearchResult[]>([]);
+  let searchTotal = $state(0);
+  let searching = $state(false);
+  let searchActive = $state(false);
+  let searchToken = 0;
   let headerSyncToken = 0;
   let openToken = 0;
 
@@ -345,12 +355,61 @@
       const msgs = await listThreadMessages(activeFolderId, conv.threadRoot);
       if (token !== openToken) return;
       threadMessages = msgs;
-      // Open the latest message in the thread.
       if (msgs.length > 0) {
         const latest = msgs[msgs.length - 1];
         selectedMessageId = latest.id;
         openDetail = await openMessage(activeFolderId, latest.id);
       }
+    } catch (e) {
+      if (token !== openToken) return;
+      openError = e instanceof Error ? e.message : String(e);
+    } finally {
+      if (token === openToken) openLoading = false;
+    }
+  }
+
+  async function onSearch() {
+    const q = searchQuery.trim();
+    if (!activeId) return;
+    if (q.length === 0) {
+      searchActive = false;
+      searchResults = [];
+      searchTotal = 0;
+      return;
+    }
+    searchActive = true;
+    searching = true;
+    const token = ++searchToken;
+    try {
+      const page = await searchMessages(activeId, q);
+      if (token !== searchToken) return;
+      searchResults = page.results;
+      searchTotal = page.total;
+    } catch (e) {
+      if (token !== searchToken) return;
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      if (token === searchToken) searching = false;
+    }
+  }
+
+  function onClearSearch() {
+    searchQuery = "";
+    searchActive = false;
+    searchResults = [];
+    searchTotal = 0;
+  }
+
+  async function onSelectSearchResult(result: SearchResult) {
+    if (!activeFolderId) return;
+    selectedMessageId = result.message.id;
+    openLoading = true;
+    openError = null;
+    openDetail = null;
+    const token = ++openToken;
+    try {
+      openDetail = await openMessage(result.message.folderId, result.message.id);
+      if (token !== openToken) return;
     } catch (e) {
       if (token !== openToken) return;
       openError = e instanceof Error ? e.message : String(e);
@@ -489,13 +548,15 @@
   <section class="pane list" aria-label="Messages">
     <div class="pane-label row">
       <span>
-        {#if activeFolder}
+        {#if searchActive}
+          {strings.search}
+        {:else if activeFolder}
           {folderLabel(activeFolder)}
         {:else}
           {strings.selectFolder}
         {/if}
       </span>
-      {#if activeFolder}
+      {#if activeFolder && !searchActive}
         <button
           type="button"
           class="linkish"
@@ -506,7 +567,30 @@
         </button>
       {/if}
     </div>
-    {#if activeFolder}
+    {#if activeId}
+      <div class="search-bar">
+        <input
+          type="text"
+          class="search-input"
+          placeholder={strings.searchPlaceholder}
+          bind:value={searchQuery}
+          oninput={onSearch}
+        />
+        {#if searchQuery.length > 0}
+          <button type="button" class="clear" onclick={onClearSearch}>✕</button>
+        {/if}
+      </div>
+    {/if}
+    {#if searchActive}
+      <SearchResults
+        results={searchResults}
+        total={searchTotal}
+        query={searchQuery}
+        loading={searching}
+        selectedId={selectedMessageId}
+        onselect={onSelectSearchResult}
+      />
+    {:else if activeFolder}
       {#if viewMode === "conversation"}
         <ConversationList
           conversations={conversations}
@@ -636,6 +720,47 @@
 
   .linkish:disabled {
     opacity: 0.5;
+  }
+
+  .search-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-elevated);
+    flex-shrink: 0;
+  }
+
+  .search-input {
+    flex: 1;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-pane);
+    color: var(--text);
+    padding: 6px 10px;
+    font-size: 13px;
+    outline: none;
+  }
+
+  .search-input:focus {
+    border-color: var(--accent);
+  }
+
+  .search-input::placeholder {
+    color: var(--text-muted);
+  }
+
+  .clear {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 14px;
+    padding: 4px;
+  }
+
+  .clear:hover {
+    color: var(--text);
   }
 
   .account-list {

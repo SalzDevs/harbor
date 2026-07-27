@@ -16,7 +16,7 @@ pub use folder::{Folder, FolderId, FolderRole};
 pub use message::{
     ConversationListItem, ConversationPage, FetchedHeader, FolderSyncProgress, FolderSyncResult,
     FolderSyncState, MessageBody, MessageDetail, MessageFlags, MessageId, MessageListItem,
-    MessageLocation, MessagePage,
+    MessageLocation, MessagePage, SearchPage, SearchResult,
 };
 pub use mime::{html_has_remote_images, parse_message_bytes, sanitize_html};
 pub use paths::{APP_ID, APP_NAME};

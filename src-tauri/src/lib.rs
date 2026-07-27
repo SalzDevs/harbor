@@ -42,6 +42,7 @@ pub fn run() {
             commands::list_thread_messages,
             commands::get_view_mode,
             commands::set_view_mode,
+            commands::search_messages,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

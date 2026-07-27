@@ -5,6 +5,7 @@ import type {
   MessageDetail,
   MessageListItem,
   MessagePage,
+  SearchPage,
   ViewMode,
 } from "./types";
 
@@ -121,4 +122,12 @@ export async function getViewMode(): Promise<ViewMode> {
 
 export async function setViewMode(mode: ViewMode): Promise<void> {
   return invoke("set_view_mode", { mode });
+}
+
+export async function searchMessages(
+  accountId: string,
+  query: string,
+  limit = 50,
+): Promise<SearchPage> {
+  return invoke<SearchPage>("search_messages", { accountId, query, limit });
 }

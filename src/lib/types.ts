@@ -100,6 +100,17 @@ export type ConversationPage = {
 
 export type ViewMode = "conversation" | "flat";
 
+export type SearchResult = {
+  message: MessageListItem;
+  snippet: string;
+};
+
+export type SearchPage = {
+  results: SearchResult[];
+  total: number;
+  query: string;
+};
+
 export type FolderSyncProgress = {
   folderId: string;
   fetched: number;

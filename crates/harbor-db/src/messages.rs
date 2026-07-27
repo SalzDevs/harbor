@@ -1,7 +1,7 @@
 use harbor_core::{
     ConversationListItem, ConversationPage, AccountId, FetchedHeader, FolderId, FolderSyncState,
     MessageBody, MessageDetail, MessageFlags, MessageId, MessageListItem, MessageLocation,
-    MessagePage,
+    MessagePage, SearchPage, SearchResult,
 };
 use rusqlite::params;
 use uuid::Uuid;
@@ -94,6 +94,17 @@ pub trait MessageRepo {
         folder_id: &FolderId,
         thread_root: &str,
     ) -> Result<Vec<MessageListItem>>;
+
+    /// Full-text search across from/to/subject/body for an account.
+    fn search_messages(
+        &self,
+        account_id: &AccountId,
+        query: &str,
+        limit: u32,
+    ) -> Result<SearchPage>;
+
+    /// Reindex a single message into the FTS table (called after upsert or body save).
+    fn reindex_message_fts(&self, message_id: &MessageId) -> Result<()>;
 }
 
 impl MessageRepo for Db {
@@ -167,6 +178,24 @@ impl MessageRepo for Db {
         tx.commit()?;
         // Recompute thread roots for messages that don't have one yet.
         self.recompute_threads(account_id, false)?;
+        // Reindex newly upserted messages into FTS.
+        for row in rows {
+            // We need the message_id; resolve again (cheap, cached by rfc).
+            let rfc = row
+                .rfc_message_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            if let Some(rfc_id) = rfc {
+                if let Some(id) = self.conn().query_row(
+                    "SELECT id FROM messages WHERE account_id = ?1 AND rfc_message_id = ?2",
+                    params![account_id.as_str(), rfc_id],
+                    |r| r.get::<_, String>(0),
+                ).ok() {
+                    let _ = self.reindex_message_fts(&MessageId(id));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -318,6 +347,8 @@ impl MessageRepo for Db {
                 body.fetched_at,
             ],
         )?;
+        // Reindex FTS since body content changed.
+        let _ = self.reindex_message_fts(message_id);
         Ok(())
     }
 
@@ -584,6 +615,108 @@ impl MessageRepo for Db {
             messages.push(row?);
         }
         Ok(messages)
+    }
+
+    fn search_messages(
+        &self,
+        account_id: &AccountId,
+        query: &str,
+        limit: u32,
+    ) -> Result<SearchPage> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Ok(SearchPage {
+                results: Vec::new(),
+                total: 0,
+                query: query.to_string(),
+            });
+        }
+
+        // Build FTS query: prefix-match each token.
+        let fts_query: String = trimmed
+            .split_whitespace()
+            .map(|t| format!("\"{}\"*", t.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        // First: total count.
+        let total: u32 = self.conn().query_row(
+            "SELECT COUNT(*) FROM messages_fts WHERE account_id = ?1 AND messages_fts MATCH ?2",
+            params![account_id.as_str(), fts_query],
+            |row| row.get::<_, i64>(0).map(|n| n as u32),
+        )?;
+
+        // Then: ranked results joined with a folder membership to get folder_id + uid.
+        let mut stmt = self.conn().prepare(
+            "SELECT m.id, m.account_id, mf.folder_id, mf.uid, m.rfc_message_id,
+                    m.subject, m.from_address, m.from_name, m.to_list, m.date_unix, m.size,
+                    m.is_seen, m.is_flagged, m.is_answered, m.is_draft,
+                    snippet(messages_fts, 5, '«', '»', '…', 24) AS snip
+             FROM messages_fts
+             JOIN messages m ON m.id = messages_fts.message_id
+             LEFT JOIN message_folders mf ON mf.message_id = m.id
+             WHERE messages_fts.account_id = ?1 AND messages_fts MATCH ?2
+             GROUP BY m.id
+             ORDER BY rank, m.date_unix DESC
+             LIMIT ?3",
+        )?;
+
+        let rows = stmt.query_map(
+            params![account_id.as_str(), fts_query, limit as i64],
+            |row| {
+                let message = map_list_item(row)?;
+                let snippet: String = row.get(15)?;
+                Ok(SearchResult { message, snippet })
+            },
+        )?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+
+        Ok(SearchPage {
+            results,
+            total,
+            query: query.to_string(),
+        })
+    }
+
+    fn reindex_message_fts(&self, message_id: &MessageId) -> Result<()> {
+        // Delete old entry, then insert from joined data.
+        self.conn().execute(
+            "DELETE FROM messages_fts WHERE message_id = ?1",
+            [message_id.as_str()],
+        )?;
+
+        let body_plain: Option<String> = self.conn().query_row(
+            "SELECT text_plain FROM message_bodies WHERE message_id = ?1",
+            [message_id.as_str()],
+            |row| row.get(0),
+        )
+        .ok()
+        .flatten();
+
+        let body_html: Option<String> = self.conn().query_row(
+            "SELECT text_html FROM message_bodies WHERE message_id = ?1",
+            [message_id.as_str()],
+            |row| row.get(0),
+        )
+        .ok()
+        .flatten();
+
+        self.conn().execute(
+            "INSERT INTO messages_fts (
+                message_id, account_id, from_address, from_name, to_list,
+                subject, body_plain, body_html
+             )
+             SELECT id, account_id, from_address, from_name, to_list,
+                    subject, ?2, ?3
+             FROM messages WHERE id = ?1",
+            params![message_id.as_str(), body_plain, body_html],
+        )?;
+
+        Ok(())
     }
 }
 

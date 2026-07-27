@@ -40,6 +40,10 @@ export const strings = {
   undo: "Undo",
   viewConversation: "Conversations",
   viewFlat: "Flat",
+  search: "Search",
+  searchPlaceholder: "Search mail…",
+  searchNoResults: "No matches.",
+  searchEmpty: "Type to search synced mail.",
   gmailOauthNotConfigured:
     "Gmail OAuth is not configured. Set HARBOR_GMAIL_CLIENT_ID or add oauth.json in the data directory.",
   outlookOauthNotConfigured:

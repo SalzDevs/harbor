@@ -115,6 +115,21 @@ CREATE INDEX IF NOT EXISTS idx_messages_thread
     ON messages(account_id, thread_root);
 "#;
 
+const MIGRATION_V7: &str = r#"
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
+USING fts5(
+    message_id UNINDEXED,
+    account_id UNINDEXED,
+    from_address,
+    from_name,
+    to_list,
+    subject,
+    body_plain,
+    body_html,
+    tokenize = 'porter unicode61'
+);
+"#;
+
 pub struct Db {
     conn: Connection,
     path: PathBuf,
@@ -222,6 +237,10 @@ impl Db {
                 )?;
             }
             self.mark_version(6)?;
+        }
+        if current < 7 {
+            self.conn.execute_batch(MIGRATION_V7)?;
+            self.mark_version(7)?;
         }
 
         Ok(())

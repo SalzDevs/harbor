@@ -3,7 +3,7 @@ use harbor_core::oauth::{load_oauth_config, sign_in_gmail, sign_in_outlook, OAut
 use harbor_core::{
     parse_message_bytes, strings, Account, AccountId, ConnectionStatus, ConversationPage, Folder,
     FolderId, FolderRole, FolderSyncResult, MessageDetail, MessageFlags, MessageId, MessagePage,
-    Provider,
+    Provider, SearchPage,
 };
 use harbor_db::{AccountRepo, Db, FolderRepo, MessageRepo, TokenRepo};
 use tauri::{AppHandle, State};
@@ -355,6 +355,22 @@ pub fn set_view_mode(state: State<'_, AppState>, mode: String) -> Result<(), Str
     }
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.set_meta(VIEW_MODE_KEY, &mode)
+        .map_err(|e| e.to_string())
+}
+
+// --- Search ----------------------------------------------------------------
+
+#[tauri::command]
+pub fn search_messages(
+    state: State<'_, AppState>,
+    account_id: String,
+    query: String,
+    limit: Option<u32>,
+) -> Result<SearchPage, String> {
+    let id = AccountId(account_id);
+    let limit = limit.unwrap_or(50).min(200);
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.search_messages(&id, &query, limit)
         .map_err(|e| e.to_string())
 }
 
