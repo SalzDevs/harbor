@@ -529,6 +529,38 @@
   }
 </script>
 
+{#if accounts.length === 0 && !signingIn}
+  <div class="firstrun">
+    <div class="firstrun-card">
+      <h1>{strings.welcome}</h1>
+      <p class="firstrun-body">{strings.welcomeBody}</p>
+      <div class="firstrun-buttons">
+        <button
+          type="button"
+          class="firstrun-btn gmail"
+          disabled={busy}
+          onclick={() => onAdd("gmail")}
+        >
+          {strings.addGmail}
+        </button>
+        <button
+          type="button"
+          class="firstrun-btn outlook"
+          disabled={busy}
+          onclick={() => onAdd("outlook")}
+        >
+          {strings.addOutlook}
+        </button>
+      </div>
+      {#if info && !info.gmailOauthConfigured && !info.outlookOauthConfigured}
+        <p class="firstrun-hint">{strings.gmailOauthNotConfigured}</p>
+      {/if}
+      {#if error}
+        <p class="firstrun-error">{error}</p>
+      {/if}
+    </div>
+  </div>
+{:else}
 <div class="shell">
   {#if statusText}
     <div
@@ -733,8 +765,87 @@
 
   <UndoBar action={lastAction} onundo={onUndo} ondismiss={() => (lastAction = null)} />
 </div>
+{/if}
 
 <style>
+  .firstrun {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    width: 100vw;
+    background: var(--bg);
+  }
+
+  .firstrun-card {
+    text-align: center;
+    max-width: 440px;
+    padding: 48px;
+  }
+
+  .firstrun-card h1 {
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0 0 12px;
+    color: var(--text);
+  }
+
+  .firstrun-body {
+    font-size: 15px;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin: 0 0 32px;
+  }
+
+  .firstrun-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .firstrun-btn {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-elevated);
+    color: var(--text);
+    padding: 14px 24px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+
+  .firstrun-btn:hover:not(:disabled) {
+    border-color: var(--accent);
+  }
+
+  .firstrun-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  .firstrun-btn.gmail:hover:not(:disabled) {
+    border-color: #ea4335;
+  }
+
+  .firstrun-btn.outlook:hover:not(:disabled) {
+    border-color: #0078d4;
+  }
+
+  .firstrun-hint {
+    margin: 20px 0 0;
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  .firstrun-error {
+    margin: 16px 0 0;
+    font-size: 13px;
+    color: #f85149;
+  }
+
   .shell {
     display: grid;
     grid-template-columns: 260px 360px 1fr;

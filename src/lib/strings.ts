@@ -12,6 +12,8 @@ export const strings = {
   noAccounts: "No accounts yet",
   selectAccount: "Select an account",
   accounts: "Accounts",
+  welcome: "Welcome to Harbor",
+  welcomeBody: "Connect an email account to get started. Your mail is synced locally for fast access.",
   inbox: "Inbox",
   folders: "Folders",
   syncFolders: "Sync folders",
