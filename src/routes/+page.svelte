@@ -73,6 +73,7 @@
   let syncingFolders = $state(false);
   let syncProgress = $state<FolderSyncProgress | null>(null);
   let connection = $state<ConnectionStatus | null>(null);
+  let accountStatuses = $state<Record<string, ConnectionStatus>>({});
   let lastAction = $state<ActionRecord | null>(null);
   let viewMode = $state<ViewMode>("conversation");
   let conversations = $state<ConversationListItem[]>([]);
@@ -105,6 +106,16 @@
   );
   const statusText = $derived(connectionLabel(connection));
 
+  function accountDotClass(accountId: string): string {
+    const s = accountStatuses[accountId];
+    if (!s) return "dot-off";
+    switch (s.kind) {
+      case "online": return "dot-online";
+      case "offline": return "dot-offline";
+      case "reconnecting": return "dot-reconnecting";
+    }
+  }
+
   onMount(async () => {
     unlistenProgress = await listen<FolderSyncProgress>(
       "folder-sync-progress",
@@ -119,6 +130,13 @@
       (event) => {
         const prev = connection;
         connection = event.payload;
+        // Track per-account status.
+        if (event.payload.accountId) {
+          accountStatuses = {
+            ...accountStatuses,
+            [event.payload.accountId]: event.payload,
+          };
+        }
         // Flush outbox when transitioning to online.
         if (prev?.kind !== "online" && event.payload.kind === "online") {
           void flushOutbox().catch(() => undefined);
@@ -537,10 +555,11 @@
             disabled={busy}
             onclick={() => onSelectAccount(account.id)}
           >
-            <span class="provider"
-              >{account.provider}
-              {#if account.status === "connected"}· connected{/if}</span
-            >
+            <span class="provider">
+              <span class="status-dot {accountDotClass(account.id)}"></span>
+              {account.provider}
+              {#if account.status === "connected"}· connected{/if}
+            </span>
             <span class="label">{accountLabel(account)}</span>
           </button>
         {/each}
@@ -900,6 +919,33 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .dot-online {
+    background: #3fb950;
+  }
+
+  .dot-offline {
+    background: #6e7681;
+  }
+
+  .dot-reconnecting {
+    background: #d29922;
+  }
+
+  .dot-off {
+    background: var(--text-muted);
+    opacity: 0.4;
   }
 
   .label {

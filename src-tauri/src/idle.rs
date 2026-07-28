@@ -69,8 +69,10 @@ impl Drop for IdleController {
 fn emit_status(
     app: &AppHandle,
     status_slot: &Arc<Mutex<ConnectionStatus>>,
+    account_id: &AccountId,
     status: ConnectionStatus,
 ) {
+    let status = status.for_account(account_id);
     if let Ok(mut slot) = status_slot.lock() {
         *slot = status.clone();
     }
@@ -90,6 +92,7 @@ fn run_watch_loop(
         emit_status(
             &app,
             &status,
+            &account_id,
             ConnectionStatus::reconnecting("Connecting…"),
         );
 
@@ -98,6 +101,7 @@ fn run_watch_loop(
             emit_status(
                 &app,
                 &status,
+                &account_id,
                 ConnectionStatus::offline("No INBOX to watch"),
             );
             if sleep_interruptible(&stop, BACKOFF_CAP) {
@@ -112,6 +116,7 @@ fn run_watch_loop(
                 emit_status(
                     &app,
                     &status,
+                    &account_id,
                     ConnectionStatus::offline(format!("Auth: {e}")),
                 );
                 if sleep_interruptible(&stop, backoff) {
@@ -129,6 +134,7 @@ fn run_watch_loop(
                 emit_status(
                     &app,
                     &status,
+                    &account_id,
                     ConnectionStatus::offline(format!("IMAP: {e}")),
                 );
                 if sleep_interruptible(&stop, backoff) {
@@ -143,7 +149,7 @@ fn run_watch_loop(
         let idle_ok = session_supports_idle(&mut session);
 
         if idle_ok {
-            emit_status(&app, &status, ConnectionStatus::online("IDLE"));
+            emit_status(&app, &status, &account_id, ConnectionStatus::online("IDLE"));
             let _ = sync_and_notify(&app, &db, &folder_id, &account_id);
 
             while !stop.load(Ordering::SeqCst) {
@@ -156,6 +162,7 @@ fn run_watch_loop(
                         emit_status(
                             &app,
                             &status,
+                            &account_id,
                             ConnectionStatus::reconnecting(format!("IDLE: {e}")),
                         );
                         break;
@@ -164,7 +171,7 @@ fn run_watch_loop(
             }
             logout(session);
         } else {
-            emit_status(&app, &status, ConnectionStatus::online("polling"));
+            emit_status(&app, &status, &account_id, ConnectionStatus::online("polling"));
             logout(session);
             while !stop.load(Ordering::SeqCst) {
                 let _ = sync_and_notify(&app, &db, &folder_id, &account_id);
@@ -186,6 +193,7 @@ fn run_watch_loop(
     emit_status(
         &app,
         &status,
+        &account_id,
         ConnectionStatus::offline("Not watching mail"),
     );
 }

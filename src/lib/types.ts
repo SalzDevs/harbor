@@ -184,6 +184,7 @@ export type ConnectionKind = "online" | "offline" | "reconnecting";
 export type ConnectionStatus = {
   kind: ConnectionKind;
   detail: string | null;
+  accountId: string | null;
 };
 
 export type FolderMailUpdated = {
