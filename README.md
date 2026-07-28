@@ -43,6 +43,51 @@ Production build:
 npm run desktop:build
 ```
 
+## Packaging
+
+### macOS
+
+```bash
+npm run desktop:build
+```
+
+Produces `src-tauri/target/release/bundle/macos/Harbor.app` and a `.dmg` installer.
+The app bundle goes to `/Applications`. Data lands in `~/Library/Application Support/Harbor/`.
+
+Signing/notarization and auto-update can be staged by setting these env vars before build:
+
+```bash
+export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+export APPLE_ID="you@example.com"
+export APPLE_PASSWORD="app-specific-password"
+export APPLE_TEAM_ID="TEAMID"
+```
+
+### Linux
+
+```bash
+npm run desktop:build
+```
+
+Produces three artifacts in `src-tauri/target/release/bundle/`:
+
+| Format | Path | Install |
+|--------|------|---------|
+| AppImage | `appimage/harbor_0.1.0_amd64.AppImage` | `chmod +x` and run, or integrate with AppImageLauncher |
+| .deb | `deb/harbor_0.1.0_amd64.deb` | `sudo dpkg -i harbor_0.1.0_amd64.deb` |
+| Binary | `harbor-app` | Direct execution |
+
+Data lands in `~/.local/share/harbor/` (or `$XDG_DATA_HOME/harbor`).
+
+Linux requires: `libwebkit2gtk-4.1-0`, `libssl3`. On Debian/Ubuntu:
+```bash
+sudo apt install libwebkit2gtk-4.1-0 libssl3
+```
+
+### CI releases
+
+Tag a push with `v*` to trigger the GitHub Actions release workflow, which builds macOS (arm64 + x64) and Linux (x64) artifacts and creates a draft GitHub release with downloadable installers.
+
 ## Data location
 
 SQLite lives in the OS app-data directory:
