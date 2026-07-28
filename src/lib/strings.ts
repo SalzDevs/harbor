@@ -44,6 +44,10 @@ export const strings = {
   searchPlaceholder: "Search mail…",
   searchNoResults: "No matches.",
   searchEmpty: "Type to search synced mail.",
+  notifications: "Notifications",
+  notifyOff: "Off",
+  notifyUnfocused: "Unfocused only",
+  notifyAlways: "Always",
   gmailOauthNotConfigured:
     "Gmail OAuth is not configured. Set HARBOR_GMAIL_CLIENT_ID or add oauth.json in the data directory.",
   outlookOauthNotConfigured:

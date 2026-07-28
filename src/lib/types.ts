@@ -162,6 +162,8 @@ export type Contact = {
   timesSeen: number;
 };
 
+export type NotifyPref = "off" | "unfocused" | "always";
+
 export type FolderSyncProgress = {
   folderId: string;
   fetched: number;

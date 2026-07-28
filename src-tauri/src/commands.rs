@@ -598,6 +598,27 @@ pub fn search_contacts(
         .map_err(|e| e.to_string())
 }
 
+// --- Notifications ---
+
+#[tauri::command]
+pub fn get_notify_pref(state: State<'_, AppState>) -> Result<String, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    Ok(db
+        .get_meta("notify_pref")
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "unfocused".to_string()))
+}
+
+#[tauri::command]
+pub fn set_notify_pref(state: State<'_, AppState>, pref: String) -> Result<(), String> {
+    if pref != "off" && pref != "unfocused" && pref != "always" {
+        return Err("invalid notification preference".into());
+    }
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.set_meta("notify_pref", &pref)
+        .map_err(|e| e.to_string())
+}
+
 fn split_addresses(s: &str) -> Vec<String> {
     s.split(',')
         .map(|a| a.trim().to_string())

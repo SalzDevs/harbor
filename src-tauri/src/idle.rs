@@ -9,8 +9,8 @@ use harbor_core::imap::{
     idle_wait, logout, select_mailbox, session_supports_idle, IdleWaitResult,
 };
 use harbor_core::{AccountId, ConnectionStatus, FolderId, FolderMailUpdated, Provider};
-use harbor_db::{AccountRepo, FolderRepo, Db};
-use tauri::{AppHandle, Emitter};
+use harbor_db::{AccountRepo, FolderRepo, MessageRepo, Db};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::sync_headers::{ensure_fresh_access_token, sync_folder_headers_inner};
 
@@ -18,6 +18,7 @@ const BACKOFF_START: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_secs(120);
 const IDLE_WAIT_SLICE: Duration = Duration::from_secs(60);
+const NOTIFY_PREF_KEY: &str = "notify_pref";
 
 pub struct IdleController {
     stop: Option<Arc<AtomicBool>>,
@@ -215,7 +216,26 @@ fn sync_and_notify(
     folder_id: &FolderId,
     account_id: &AccountId,
 ) -> Result<(), String> {
+    // Count messages before sync.
+    let count_before = {
+        let db = db.lock().map_err(|e| e.to_string())?;
+        db.list_messages(folder_id, 1, 0)
+            .map(|p| p.total)
+            .unwrap_or(0)
+    };
+
     let _ = sync_folder_headers_inner(None, db, folder_id)?;
+
+    // Count after sync.
+    let count_after = {
+        let db = db.lock().map_err(|e| e.to_string())?;
+        db.list_messages(folder_id, 1, 0)
+            .map(|p| p.total)
+            .unwrap_or(0)
+    };
+
+    let new_count = count_after.saturating_sub(count_before);
+
     let _ = app.emit(
         "folder-mail-updated",
         FolderMailUpdated {
@@ -223,15 +243,82 @@ fn sync_and_notify(
             account_id: account_id.as_str().to_string(),
         },
     );
+
     // Background-prefetch newest INBOX bodies; does not block IDLE.
     crate::sync_headers::spawn_prefetch_inbox_bodies(
         app.clone(),
         Arc::clone(db),
         folder_id.clone(),
-        // No shared stop here; prefetch self-limits and is short-lived.
         Arc::new(AtomicBool::new(false)),
     );
+
+    // Desktop notification for new mail.
+    if new_count > 0 {
+        maybe_notify(app, db, new_count, account_id);
+    }
+
     Ok(())
+}
+
+fn maybe_notify(
+    app: &AppHandle,
+    db: &Arc<Mutex<Db>>,
+    new_count: u32,
+    account_id: &AccountId,
+) {
+    // Check pref: off / unfocused / always.
+    let pref = {
+        let db = match db.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        db.get_meta(NOTIFY_PREF_KEY)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "unfocused".to_string())
+    };
+
+    if pref == "off" {
+        return;
+    }
+
+    // Check window focus.
+    let is_focused = app
+        .get_webview_window("main")
+        .map(|w| w.is_focused().unwrap_or(true))
+        .unwrap_or(true);
+
+    if pref == "unfocused" && is_focused {
+        return;
+    }
+
+    // Send notification.
+    use tauri_plugin_notification::NotificationExt;
+    let title = if new_count == 1 {
+        "1 new message".to_string()
+    } else {
+        format!("{new_count} new messages")
+    };
+
+    let body = {
+        let db = match db.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                let _ = app.notification().builder().title(&title).show();
+                return;
+            }
+        };
+        db.get_account(account_id)
+            .ok()
+            .flatten()
+            .and_then(|a| a.email)
+            .unwrap_or_default()
+    };
+
+    let _ = app.notification().builder()
+        .title(&title)
+        .body(&body)
+        .show();
 }
 
 fn next_backoff(current: Duration) -> Duration {

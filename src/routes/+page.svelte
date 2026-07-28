@@ -36,6 +36,7 @@
     syncFolderHeaders,
     undoAction,
   } from "$lib/messages";
+  import { getNotifyPref, setNotifyPref } from "$lib/notify";
   import { strings } from "$lib/strings";
   import type {
     Account,
@@ -48,6 +49,7 @@
     FolderSyncProgress,
     MessageDetail,
     MessageListItem,
+    NotifyPref,
     Provider,
     SearchPage,
     SearchResult,
@@ -87,6 +89,7 @@
   let composeReplyTo = $state<MessageDetail | null>(null);
   let composeReplyAll = $state(false);
   let composeForward = $state(false);
+  let notifyPref = $state<NotifyPref>("unfocused");
   let headerSyncToken = 0;
   let openToken = 0;
 
@@ -139,6 +142,11 @@
       viewMode = await getViewMode();
     } catch {
       /* default conversation */
+    }
+    try {
+      notifyPref = await getNotifyPref();
+    } catch {
+      /* default unfocused */
     }
     await reload();
   });
@@ -575,6 +583,22 @@
           ✎ Compose
         </button>
       {/if}
+      <div class="pref-row">
+        <span class="pref-label">{strings.notifications}</span>
+        <select
+          class="pref-select"
+          value={notifyPref}
+          onchange={(e) => {
+            const val = (e.currentTarget as HTMLSelectElement).value as NotifyPref;
+            notifyPref = val;
+            void setNotifyPref(val);
+          }}
+        >
+          <option value="off">{strings.notifyOff}</option>
+          <option value="unfocused">{strings.notifyUnfocused}</option>
+          <option value="always">{strings.notifyAlways}</option>
+        </select>
+      </div>
       <button type="button" class="btn" disabled={busy} onclick={() => onAdd("gmail")}>
         {strings.addGmail}
       </button>
@@ -913,6 +937,30 @@
     border-color: var(--accent);
     color: var(--accent);
     font-weight: 600;
+  }
+
+  .pref-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .pref-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .pref-select {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-pane);
+    color: var(--text);
+    font-size: 12px;
+    padding: 4px 8px;
+    outline: none;
   }
 
   .reply-bar {
