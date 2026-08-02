@@ -70,8 +70,7 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_rfc
-    ON messages(account_id, rfc_message_id)
-    WHERE rfc_message_id IS NOT NULL AND rfc_message_id != '';
+    ON messages(account_id, rfc_message_id);
 
 CREATE INDEX IF NOT EXISTS idx_messages_account_date
     ON messages(account_id, date_unix DESC);
@@ -178,6 +177,16 @@ CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(name);
 
 const MIGRATION_V9: &str = r#"
 ALTER TABLE message_bodies ADD COLUMN attachments_json TEXT;
+"#;
+
+// V10: the rfc lookup index was partial (WHERE rfc IS NOT NULL AND != ''),
+// which SQLite could never match against bound parameters, so every
+// resolve_or_insert_message lookup fell back to a full account scan. Make
+// it a plain unique index; NULL/absent ids are allowed multiple times.
+const MIGRATION_V10: &str = r#"
+DROP INDEX IF EXISTS idx_messages_rfc;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_rfc
+    ON messages(account_id, rfc_message_id);
 "#;
 
 pub struct Db {
@@ -307,6 +316,10 @@ impl Db {
             }
             self.mark_version(9)?;
         }
+        if current < 10 {
+            self.conn.execute_batch(MIGRATION_V10)?;
+            self.mark_version(10)?;
+        }
 
         Ok(())
     }
@@ -338,5 +351,44 @@ impl Db {
             [key, value],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The rfc unique index must NOT be partial: a partial index is ineligible
+    // for lookups bound to parameters, so header de-dupe falls back to a full
+    // account scan (minutes on large mailboxes). Regression for MIGRATION_V10.
+    #[test]
+    fn idx_messages_rfc_is_not_partial() {
+        let db = Db::open_in_memory().unwrap();
+        let has_partial: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_messages_rfc'
+                   AND sql LIKE '%WHERE%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            has_partial, 0,
+            "idx_messages_rfc must not have a WHERE clause"
+        );
+    }
+
+    #[test]
+    fn schema_migrations_reaches_latest_version() {
+        let db = Db::open_in_memory().unwrap();
+        let latest: i64 = db
+            .conn()
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(latest >= 10);
     }
 }

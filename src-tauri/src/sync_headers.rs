@@ -1,13 +1,49 @@
 //! Shared folder header sync used by commands and the IDLE worker.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 use harbor_core::imap::{
     fetch_headers_for_uids, fetch_raw_message, logout, search_all_uids, search_uids_after,
     select_mailbox,
 };
+
+// Guard so the frontend sync command and the IDLE worker never run a full
+// folder sync for the same folder concurrently (they used to thrash the DB
+// write lock and freeze the main thread for minutes on large mailboxes).
+static SYNCING_FOLDERS: OnceLock<Mutex<HashSet<FolderId>>> = OnceLock::new();
+
+pub struct SyncInFlightGuard {
+    folder_id: FolderId,
+}
+
+impl SyncInFlightGuard {
+    pub fn acquire(folder_id: &FolderId) -> Option<Self> {
+        let set = SYNCING_FOLDERS.get_or_init(|| Mutex::new(HashSet::new()));
+        let Ok(mut set) = set.lock() else {
+            return None;
+        };
+        if set.contains(folder_id) {
+            return None;
+        }
+        set.insert(folder_id.clone());
+        Some(Self {
+            folder_id: folder_id.clone(),
+        })
+    }
+}
+
+impl Drop for SyncInFlightGuard {
+    fn drop(&mut self) {
+        if let Some(set) = SYNCING_FOLDERS.get() {
+            if let Ok(mut set) = set.lock() {
+                set.remove(&self.folder_id);
+            }
+        }
+    }
+}
 use harbor_core::oauth::{
     gmail_token_url, load_oauth_config, outlook_token_url, refresh_access_token, OAuthClientConfig,
     TokenRefreshRequest,
@@ -106,7 +142,8 @@ pub fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-/// Incremental header sync for one folder.
+/// Incremental header sync for one folder. No-ops (reports 0 fetched) if a
+/// sync for the same folder is already running, e.g. from the IDLE worker.
 pub fn sync_folder_headers_inner(
     app: Option<&AppHandle>,
     db: &Arc<Mutex<Db>>,
@@ -129,6 +166,18 @@ pub fn sync_folder_headers_inner(
             .email
             .ok_or_else(|| "account has no email".to_string())?;
         (folder.account_id, account.provider, email, folder.imap_name)
+    };
+
+    let Some(_guard) = SyncInFlightGuard::acquire(folder_id) else {
+        tracing::info!(
+            "Sync skipped: already in progress for folder {}",
+            folder_id.as_str()
+        );
+        return Ok(FolderSyncResult {
+            folder_id: folder_id.clone(),
+            fetched: 0,
+            total: 0,
+        });
     };
 
     let fresh = ensure_fresh_access_token(db, &account_id)?;

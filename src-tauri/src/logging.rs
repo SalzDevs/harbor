@@ -55,9 +55,14 @@ pub fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
         }
     };
 
+    // Parse HARBOR_LOG (fallback RUST_LOG, then info). Keep HTML-parser crates
+    // quiet: they emit DEBUG noise for every tag/comment, which floods the file
+    // log during body parsing (tens of MB per session at debug level).
     let env_filter = EnvFilter::try_from_env("HARBOR_LOG")
         .or_else(|_| EnvFilter::try_from_env("RUST_LOG"))
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+        .unwrap_or_else(|_| EnvFilter::new("info"))
+        .add_directive("html5ever=off".parse().unwrap())
+        .add_directive("scraper=off".parse().unwrap());
 
     let file_layer = tracing_subscriber::fmt::layer()
         .with_writer(non_blocking)

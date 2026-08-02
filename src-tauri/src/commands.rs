@@ -200,7 +200,7 @@ pub fn list_messages(
 }
 
 #[tauri::command]
-pub fn sync_folder_headers(
+pub async fn sync_folder_headers(
     app: AppHandle,
     state: State<'_, AppState>,
     folder_id: String,
