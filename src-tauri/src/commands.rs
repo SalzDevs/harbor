@@ -20,6 +20,7 @@ pub struct AppInfo {
     pub core: String,
     pub db: String,
     pub data_dir: String,
+    pub log_dir: String,
     pub gmail_oauth_configured: bool,
     pub outlook_oauth_configured: bool,
 }
@@ -33,6 +34,7 @@ pub fn app_info() -> AppInfo {
         core: harbor_core::core_status().to_string(),
         db: harbor_db::db_status(),
         data_dir: data_dir.display().to_string(),
+        log_dir: crate::logging::log_dir().display().to_string(),
         gmail_oauth_configured: oauth.as_ref().and_then(|c| c.gmail.as_ref()).is_some(),
         outlook_oauth_configured: oauth.as_ref().and_then(|c| c.outlook.as_ref()).is_some(),
     }
@@ -59,6 +61,7 @@ pub fn sign_in_gmail_account(
     })?;
 
     let signed = sign_in_gmail(&client).map_err(|e| e.to_string())?;
+    tracing::info!("Gmail sign-in completed for {}", signed.email);
     let account = persist_connected(
         &state,
         Provider::Gmail,
@@ -86,6 +89,7 @@ pub fn sign_in_outlook_account(
     })?;
 
     let signed = sign_in_outlook(&client).map_err(|e| e.to_string())?;
+    tracing::info!("Outlook sign-in completed for {}", signed.email);
     let account = persist_connected(
         &state,
         Provider::Outlook,
@@ -127,14 +131,17 @@ pub fn refresh_account_token(
             .map(|t| t.access_token)
     };
     let fresh = ensure_fresh_access_token(&state.db, &id)?;
-    Ok(before.as_deref() != Some(fresh.access_token.as_str()))
+    let changed = before.as_deref() != Some(fresh.access_token.as_str());
+    tracing::info!(
+        "refresh_account_token for {}: {}",
+        id.as_str(),
+        if changed { "refreshed" } else { "still valid" }
+    );
+    Ok(changed)
 }
 
 #[tauri::command]
-pub fn list_folders(
-    state: State<'_, AppState>,
-    account_id: String,
-) -> Result<Vec<Folder>, String> {
+pub fn list_folders(state: State<'_, AppState>, account_id: String) -> Result<Vec<Folder>, String> {
     let id = AccountId(account_id);
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.list_folders(&id).map_err(|e| e.to_string())
@@ -168,6 +175,7 @@ fn sync_folders_for_account(
     let fresh = ensure_fresh_access_token(&state.db, id)?;
     let remote =
         list_remote_folders(provider, &email, &fresh.access_token).map_err(|e| e.to_string())?;
+    tracing::info!("Listed {} remote folders for {email}", remote.len());
 
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.replace_folders(id, &remote).map_err(|e| e.to_string())
@@ -355,8 +363,7 @@ pub fn set_view_mode(state: State<'_, AppState>, mode: String) -> Result<(), Str
         return Err("invalid view mode".into());
     }
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.set_meta(VIEW_MODE_KEY, &mode)
-        .map_err(|e| e.to_string())
+    db.set_meta(VIEW_MODE_KEY, &mode).map_err(|e| e.to_string())
 }
 
 // --- Search ----------------------------------------------------------------
@@ -412,6 +419,7 @@ pub fn list_outbox(
 }
 
 /// Send or queue a message. If online, sends immediately; if offline, queues in outbox.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn send_mail(
     app: AppHandle,
@@ -444,10 +452,7 @@ pub fn send_mail(
 
     // Check connection status — if offline, queue.
     let is_online = {
-        let status = state
-            .connection_status
-            .lock()
-            .map_err(|e| e.to_string())?;
+        let status = state.connection_status.lock().map_err(|e| e.to_string())?;
         status.kind == harbor_core::ConnectionKind::Online
     };
 
@@ -467,6 +472,10 @@ pub fn send_mail(
             error: None,
             created_at: now,
         };
+        tracing::info!(
+            "Offline: queued message '{}' for {email} in outbox",
+            item.subject
+        );
         let db = state.db.lock().map_err(|e| e.to_string())?;
         db.enqueue_outbox(&account_id, &item)
             .map_err(|e| e.to_string())?;
@@ -490,6 +499,11 @@ pub fn send_mail(
 
     match send_message(provider, &email, &fresh.access_token, &outgoing) {
         Ok(()) => {
+            tracing::info!(
+                "Sent message '{}' to {}",
+                outgoing.subject,
+                outgoing.to.len()
+            );
             // Record contacts from recipients.
             let db = state.db.lock().map_err(|e| e.to_string())?;
             for addr in &outgoing.to {
@@ -498,6 +512,11 @@ pub fn send_mail(
             Ok(())
         }
         Err(e) => {
+            tracing::warn!(
+                "Send failed for '{}' to {}; queuing in outbox: {e}",
+                outgoing.subject,
+                outgoing.to.len()
+            );
             // Queue on failure so user can retry.
             let item = OutboxItem {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -530,6 +549,7 @@ pub fn flush_outbox(app: AppHandle, state: State<'_, AppState>) -> Result<u32, S
         let db = state.db.lock().map_err(|e| e.to_string())?;
         db.list_queued_outbox().map_err(|e| e.to_string())?
     };
+    let total = queued.len();
 
     let mut sent = 0u32;
     for item in queued {
@@ -576,12 +596,15 @@ pub fn flush_outbox(app: AppHandle, state: State<'_, AppState>) -> Result<u32, S
                 sent += 1;
             }
             Err(e) => {
+                tracing::warn!("Outbox flush: message {} failed: {e}", item.id);
                 let db = state.db.lock().map_err(|e| e.to_string())?;
-                let _ = db.update_outbox_status(&item.id, OutboxStatus::Failed, Some(&e.to_string()));
+                let _ =
+                    db.update_outbox_status(&item.id, OutboxStatus::Failed, Some(&e.to_string()));
             }
         }
     }
 
+    tracing::info!("Outbox flush complete: sent {sent}/{total}");
     let _ = app.emit("outbox-updated", ());
     Ok(sent)
 }
@@ -594,8 +617,7 @@ pub fn search_contacts(
 ) -> Result<Vec<harbor_core::Contact>, String> {
     let limit = limit.unwrap_or(10).min(50);
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.search_contacts(&query, limit)
-        .map_err(|e| e.to_string())
+    db.search_contacts(&query, limit).map_err(|e| e.to_string())
 }
 
 // --- Notifications ---
@@ -615,8 +637,7 @@ pub fn set_notify_pref(state: State<'_, AppState>, pref: String) -> Result<(), S
         return Err("invalid notification preference".into());
     }
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.set_meta("notify_pref", &pref)
-        .map_err(|e| e.to_string())
+    db.set_meta("notify_pref", &pref).map_err(|e| e.to_string())
 }
 
 fn split_addresses(s: &str) -> Vec<String> {
@@ -665,10 +686,9 @@ pub async fn download_attachment(
     // Extract PathBuf from FilePath.
     let path_buf = match file_path {
         tauri_plugin_dialog::FilePath::Path(p) => p,
-        tauri_plugin_dialog::FilePath::Url(u) => {
-            u.to_file_path()
-                .map_err(|_| "invalid file URL".to_string())?
-        }
+        tauri_plugin_dialog::FilePath::Url(u) => u
+            .to_file_path()
+            .map_err(|_| "invalid file URL".to_string())?,
     };
 
     // Fetch the body section via IMAP.
@@ -784,9 +804,10 @@ fn resolve_special_folder(
         _ => None,
     };
     if let Some(name) = fallback {
-        if let Some(f) = folders.iter().find(|f| {
-            f.imap_name.eq_ignore_ascii_case(name) || f.name.eq_ignore_ascii_case(name)
-        }) {
+        if let Some(f) = folders
+            .iter()
+            .find(|f| f.imap_name.eq_ignore_ascii_case(name) || f.name.eq_ignore_ascii_case(name))
+        {
             return Ok(f.imap_name.clone());
         }
         return Ok(name.to_string());
@@ -812,10 +833,22 @@ pub fn archive_message(
             .get_account(&folder.account_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "account not found".to_string())?;
-        let dest = resolve_special_folder(&db, &folder.account_id, account.provider, FolderRole::Archive)?;
+        let dest = resolve_special_folder(
+            &db,
+            &folder.account_id,
+            account.provider,
+            FolderRole::Archive,
+        )?;
         (dest, "Archived".to_string())
     };
-    apply_deferred_move(&state.db, &state.deferred, &folder_id, &message_id, dest_imap, label)
+    apply_deferred_move(
+        &state.db,
+        &state.deferred,
+        &folder_id,
+        &message_id,
+        dest_imap,
+        label,
+    )
 }
 
 #[tauri::command]
@@ -836,10 +869,18 @@ pub fn delete_message(
             .get_account(&folder.account_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "account not found".to_string())?;
-        let dest = resolve_special_folder(&db, &folder.account_id, account.provider, FolderRole::Trash)?;
+        let dest =
+            resolve_special_folder(&db, &folder.account_id, account.provider, FolderRole::Trash)?;
         (dest, "Deleted".to_string())
     };
-    apply_deferred_move(&state.db, &state.deferred, &folder_id, &message_id, dest_imap, label)
+    apply_deferred_move(
+        &state.db,
+        &state.deferred,
+        &folder_id,
+        &message_id,
+        dest_imap,
+        label,
+    )
 }
 
 #[tauri::command]
@@ -872,10 +913,7 @@ pub fn move_message(
 /// Undo a deferred action by id. For moves, cancels the server op and restores
 /// the local membership. For flag changes, re-toggles back to the prior state.
 #[tauri::command]
-pub fn undo_action(
-    state: State<'_, AppState>,
-    action_id: String,
-) -> Result<(), String> {
+pub fn undo_action(state: State<'_, AppState>, action_id: String) -> Result<(), String> {
     let record = state
         .deferred
         .cancel(&action_id)

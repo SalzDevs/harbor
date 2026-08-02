@@ -11,7 +11,11 @@ pub trait FolderRepo {
     fn get_folder(&self, folder_id: &FolderId) -> Result<Option<Folder>>;
     fn find_inbox(&self, account_id: &AccountId) -> Result<Option<Folder>>;
     /// Upsert by (account_id, imap_name) so folder IDs stay stable across syncs.
-    fn replace_folders(&self, account_id: &AccountId, remote: &[RemoteFolder]) -> Result<Vec<Folder>>;
+    fn replace_folders(
+        &self,
+        account_id: &AccountId,
+        remote: &[RemoteFolder],
+    ) -> Result<Vec<Folder>>;
 }
 
 impl FolderRepo for Db {
@@ -104,7 +108,8 @@ impl FolderRepo for Db {
                 "DELETE FROM folders WHERE account_id = ?1 AND imap_name NOT IN ({placeholders})"
             );
             let mut stmt = self.conn().prepare(&sql)?;
-            let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(1 + seen_names.len());
+            let mut params: Vec<&dyn rusqlite::types::ToSql> =
+                Vec::with_capacity(1 + seen_names.len());
             params.push(&account_id.0);
             for n in &seen_names {
                 params.push(n);
@@ -113,11 +118,14 @@ impl FolderRepo for Db {
         }
 
         for r in remote {
-            let existing: Option<String> = self.conn().query_row(
-                "SELECT id FROM folders WHERE account_id = ?1 AND imap_name = ?2",
-                params![account_id.as_str(), r.imap_name],
-                |row| row.get(0),
-            ).ok();
+            let existing: Option<String> = self
+                .conn()
+                .query_row(
+                    "SELECT id FROM folders WHERE account_id = ?1 AND imap_name = ?2",
+                    params![account_id.as_str(), r.imap_name],
+                    |row| row.get(0),
+                )
+                .ok();
 
             if let Some(id) = existing {
                 self.conn().execute(

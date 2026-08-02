@@ -19,24 +19,13 @@ impl fmt::Display for MessageId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageFlags {
     pub seen: bool,
     pub flagged: bool,
     pub answered: bool,
     pub draft: bool,
-}
-
-impl Default for MessageFlags {
-    fn default() -> Self {
-        Self {
-            seen: false,
-            flagged: false,
-            answered: false,
-            draft: false,
-        }
-    }
 }
 
 /// Headers + flags for list display (no body).

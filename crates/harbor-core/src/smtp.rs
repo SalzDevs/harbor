@@ -59,35 +59,46 @@ pub fn send_message(
 
     let host = smtp_host(provider);
     let port = 587;
+    tracing::info!(
+        "Connecting to SMTP server {host}:{port} for {email} (to: {}, subject: '{}')",
+        msg.to.len(),
+        msg.subject
+    );
 
     // Build the email.
     let from_mailbox = match &msg.from_name {
-        Some(name) => Mailbox::new(Some(name.clone()), msg.from_email.parse().map_err(|e| {
-            SmtpError::Other(format!("invalid from address: {e}"))
-        })?),
-        None => Mailbox::new(None, msg.from_email.parse().map_err(|e| {
-            SmtpError::Other(format!("invalid from address: {e}"))
-        })?),
+        Some(name) => Mailbox::new(
+            Some(name.clone()),
+            msg.from_email
+                .parse()
+                .map_err(|e| SmtpError::Other(format!("invalid from address: {e}")))?,
+        ),
+        None => Mailbox::new(
+            None,
+            msg.from_email
+                .parse()
+                .map_err(|e| SmtpError::Other(format!("invalid from address: {e}")))?,
+        ),
     };
 
     let mut builder = Message::builder().from(from_mailbox);
 
     for addr in &msg.to {
-        let mbox: Mailbox = addr.parse().map_err(|e| {
-            SmtpError::Other(format!("invalid to address '{addr}': {e}"))
-        })?;
+        let mbox: Mailbox = addr
+            .parse()
+            .map_err(|e| SmtpError::Other(format!("invalid to address '{addr}': {e}")))?;
         builder = builder.to(mbox);
     }
     for addr in &msg.cc {
-        let mbox: Mailbox = addr.parse().map_err(|e| {
-            SmtpError::Other(format!("invalid cc address '{addr}': {e}"))
-        })?;
+        let mbox: Mailbox = addr
+            .parse()
+            .map_err(|e| SmtpError::Other(format!("invalid cc address '{addr}': {e}")))?;
         builder = builder.to(mbox);
     }
     for addr in &msg.bcc {
-        let mbox: Mailbox = addr.parse().map_err(|e| {
-            SmtpError::Other(format!("invalid bcc address '{addr}': {e}"))
-        })?;
+        let mbox: Mailbox = addr
+            .parse()
+            .map_err(|e| SmtpError::Other(format!("invalid bcc address '{addr}': {e}")))?;
         builder = builder.to(mbox);
     }
 
@@ -141,6 +152,10 @@ pub fn send_message(
         .credentials(creds)
         .build();
 
-    transport.send(&built_email)?;
+    if let Err(e) = transport.send(&built_email) {
+        tracing::warn!("SMTP send failed for {email}: {e}");
+        return Err(SmtpError::Smtp(e));
+    }
+    tracing::info!("SMTP message sent successfully for {email}");
     Ok(())
 }

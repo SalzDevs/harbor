@@ -83,7 +83,7 @@ fn extract_attachments(msg: &mail_parser::Message<'_>) -> Vec<AttachmentInfo> {
     let mut out = Vec::new();
     for (idx, part) in msg.parts.iter().enumerate() {
         // Skip text/plain and text/html (those are body parts, not attachments).
-        let ct = part
+        let _ct = part
             .content_type()
             .map(|c| {
                 format!(
@@ -97,9 +97,7 @@ fn extract_attachments(msg: &mail_parser::Message<'_>) -> Vec<AttachmentInfo> {
 
         if matches!(&part.body, PartType::Text(_) | PartType::Html(_)) {
             // Text parts are body, not attachments — unless they have a filename.
-            let has_filename = part
-                .attachment_name()
-                .is_some();
+            let has_filename = part.attachment_name().is_some();
             if !has_filename {
                 continue;
             }
@@ -153,7 +151,9 @@ fn extract_attachments(msg: &mail_parser::Message<'_>) -> Vec<AttachmentInfo> {
 /// Strip scripts/handlers; keep structure. Remote images left in markup so UI can gate them.
 pub fn sanitize_html(html: &str) -> String {
     let mut builder = Builder::default();
-    builder.rm_tags(["script", "iframe", "object", "embed", "form", "base", "link"]);
+    builder.rm_tags([
+        "script", "iframe", "object", "embed", "form", "base", "link",
+    ]);
     builder.attribute_filter(|_el, attr, value| {
         if attr.starts_with("on")
             || attr.eq_ignore_ascii_case("srcdoc")
@@ -171,7 +171,12 @@ pub fn sanitize_html(html: &str) -> String {
 pub fn html_has_remote_images(html: &str) -> bool {
     let lower = html.to_ascii_lowercase();
     // crude but effective for v1
-    for needle in ["src=\"http://", "src='http://", "src=\"https://", "src='https://"] {
+    for needle in [
+        "src=\"http://",
+        "src='http://",
+        "src=\"https://",
+        "src='https://",
+    ] {
         if lower.contains(needle) {
             return true;
         }
@@ -215,6 +220,8 @@ mod tests {
     fn detects_remote_images() {
         assert!(html_has_remote_images(r#"<img src="https://x.com/a.png">"#));
         assert!(!html_has_remote_images(r#"<img src="cid:abc">"#));
-        assert!(!html_has_remote_images(r#"<img src="data:image/png;base64,xx">"#));
+        assert!(!html_has_remote_images(
+            r#"<img src="data:image/png;base64,xx">"#
+        ));
     }
 }

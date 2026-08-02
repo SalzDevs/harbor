@@ -11,12 +11,7 @@ const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v2/userinfo";
 
 /// Gmail IMAP/SMTP XOAUTH2 requires the full mail scope.
-const SCOPES: &[&str] = &[
-    "openid",
-    "email",
-    "profile",
-    "https://mail.google.com/",
-];
+const SCOPES: &[&str] = &["openid", "email", "profile", "https://mail.google.com/"];
 
 #[derive(Debug, Clone)]
 pub struct GmailSignIn {
@@ -70,10 +65,7 @@ struct UserInfo {
 
 fn fetch_userinfo(access_token: &str) -> Result<UserInfo> {
     let client = reqwest::blocking::Client::new();
-    let response = client
-        .get(USERINFO_URL)
-        .bearer_auth(access_token)
-        .send()?;
+    let response = client.get(USERINFO_URL).bearer_auth(access_token).send()?;
     let status = response.status();
     let body = response.text()?;
     if !status.is_success() {

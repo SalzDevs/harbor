@@ -175,6 +175,7 @@ export type AppInfo = {
   core: string;
   db: string;
   dataDir: string;
+  logDir: string;
   gmailOauthConfigured: boolean;
   outlookOauthConfigured: boolean;
 };

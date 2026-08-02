@@ -95,6 +95,19 @@ SQLite lives in the OS app-data directory:
 - macOS: `~/Library/Application Support/Harbor/harbor.sqlite3`
 - Linux: `~/.local/share/harbor/harbor.sqlite3` (or `$XDG_DATA_HOME/harbor`)
 
+## Logging
+
+Harbor logs to the OS log directory via `tracing`:
+
+- macOS: `~/Library/Logs/Harbor/harbor.log.YYYY-MM-DD`
+- Linux: `~/.local/state/harbor/harbor.log.YYYY-MM-DD` (or `$XDG_STATE_HOME/harbor`)
+
+Logs rotate daily and are kept for 7 days. Verbosity is controlled by `HARBOR_LOG` (falls back to `RUST_LOG`, then `info`):
+
+```bash
+HARBOR_LOG=debug npm run desktop
+```
+
 ## OAuth setup
 
 Copy `oauth.json.example` to the data dir as `oauth.json`, or use env vars. Harbor uses loopback redirects (`http://127.0.0.1:<ephemeral>/oauth/callback`).

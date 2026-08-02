@@ -1,5 +1,5 @@
 use harbor_core::{
-    ConversationListItem, ConversationPage, AccountId, FetchedHeader, FolderId, FolderSyncState,
+    AccountId, ConversationListItem, ConversationPage, FetchedHeader, FolderId, FolderSyncState,
     MessageBody, MessageDetail, MessageFlags, MessageId, MessageListItem, MessageLocation,
     MessagePage, SearchPage, SearchResult,
 };
@@ -10,12 +10,7 @@ use crate::error::Result;
 use crate::store::Db;
 
 pub trait MessageRepo {
-    fn list_messages(
-        &self,
-        folder_id: &FolderId,
-        limit: u32,
-        offset: u32,
-    ) -> Result<MessagePage>;
+    fn list_messages(&self, folder_id: &FolderId, limit: u32, offset: u32) -> Result<MessagePage>;
 
     fn upsert_fetched_headers(
         &self,
@@ -108,12 +103,7 @@ pub trait MessageRepo {
 }
 
 impl MessageRepo for Db {
-    fn list_messages(
-        &self,
-        folder_id: &FolderId,
-        limit: u32,
-        offset: u32,
-    ) -> Result<MessagePage> {
+    fn list_messages(&self, folder_id: &FolderId, limit: u32, offset: u32) -> Result<MessagePage> {
         let total: u32 = self.conn().query_row(
             "SELECT COUNT(*) FROM message_folders WHERE folder_id = ?1",
             [folder_id.as_str()],
@@ -187,11 +177,11 @@ impl MessageRepo for Db {
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
             if let Some(rfc_id) = rfc {
-                if let Some(id) = self.conn().query_row(
+                if let Ok(id) = self.conn().query_row(
                     "SELECT id FROM messages WHERE account_id = ?1 AND rfc_message_id = ?2",
                     params![account_id.as_str(), rfc_id],
                     |r| r.get::<_, String>(0),
-                ).ok() {
+                ) {
                     let _ = self.reindex_message_fts(&MessageId(id));
                 }
             }
@@ -242,9 +232,7 @@ impl MessageRepo for Db {
                 folder_id: FolderId(row.get(0)?),
                 uidvalidity: row.get::<_, i64>(1)? as u32,
                 last_uid: row.get::<_, i64>(2)? as u32,
-                uidnext: row
-                    .get::<_, Option<i64>>(3)?
-                    .map(|n| n as u32),
+                uidnext: row.get::<_, Option<i64>>(3)?.map(|n| n as u32),
                 last_synced_at: row.get(4)?,
             }))
         } else {
@@ -273,9 +261,9 @@ impl MessageRepo for Db {
     }
 
     fn local_uids_for_folder(&self, folder_id: &FolderId) -> Result<Vec<u32>> {
-        let mut stmt = self.conn().prepare(
-            "SELECT uid FROM message_folders WHERE folder_id = ?1 ORDER BY uid ASC",
-        )?;
+        let mut stmt = self
+            .conn()
+            .prepare("SELECT uid FROM message_folders WHERE folder_id = ?1 ORDER BY uid ASC")?;
         let rows = stmt.query_map([folder_id.as_str()], |row| {
             row.get::<_, i64>(0).map(|n| n as u32)
         })?;
@@ -424,15 +412,12 @@ impl MessageRepo for Db {
              ORDER BY m.date_unix DESC, mf.uid DESC
              LIMIT ?2",
         )?;
-        let rows = stmt.query_map(
-            params![folder_id.as_str(), limit as i64],
-            |row| {
-                Ok((
-                    MessageId(row.get::<_, String>(0)?),
-                    row.get::<_, i64>(1)? as u32,
-                ))
-            },
-        )?;
+        let rows = stmt.query_map(params![folder_id.as_str(), limit as i64], |row| {
+            Ok((
+                MessageId(row.get::<_, String>(0)?),
+                row.get::<_, i64>(1)? as u32,
+            ))
+        })?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
@@ -464,12 +449,14 @@ impl MessageRepo for Db {
         folder_id: &FolderId,
         message_id: &MessageId,
     ) -> Result<Option<u32>> {
-        let uid: Option<i64> = self.conn().query_row(
-            "SELECT uid FROM message_folders WHERE folder_id = ?1 AND message_id = ?2",
-            params![folder_id.as_str(), message_id.as_str()],
-            |row| row.get(0),
-        )
-        .ok();
+        let uid: Option<i64> = self
+            .conn()
+            .query_row(
+                "SELECT uid FROM message_folders WHERE folder_id = ?1 AND message_id = ?2",
+                params![folder_id.as_str(), message_id.as_str()],
+                |row| row.get(0),
+            )
+            .ok();
         if let Some(u) = uid {
             self.conn().execute(
                 "DELETE FROM message_folders WHERE folder_id = ?1 AND message_id = ?2",
@@ -616,10 +603,7 @@ impl MessageRepo for Db {
              WHERE mf.folder_id = ?1 AND m.thread_root = ?2
              ORDER BY m.date_unix ASC, mf.uid ASC",
         )?;
-        let rows = stmt.query_map(
-            params![folder_id.as_str(), thread_root],
-            map_list_item,
-        )?;
+        let rows = stmt.query_map(params![folder_id.as_str(), thread_root], map_list_item)?;
         let mut messages = Vec::new();
         for row in rows {
             messages.push(row?);
@@ -699,21 +683,25 @@ impl MessageRepo for Db {
             [message_id.as_str()],
         )?;
 
-        let body_plain: Option<String> = self.conn().query_row(
-            "SELECT text_plain FROM message_bodies WHERE message_id = ?1",
-            [message_id.as_str()],
-            |row| row.get(0),
-        )
-        .ok()
-        .flatten();
+        let body_plain: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT text_plain FROM message_bodies WHERE message_id = ?1",
+                [message_id.as_str()],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
 
-        let body_html: Option<String> = self.conn().query_row(
-            "SELECT text_html FROM message_bodies WHERE message_id = ?1",
-            [message_id.as_str()],
-            |row| row.get(0),
-        )
-        .ok()
-        .flatten();
+        let body_html: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT text_html FROM message_bodies WHERE message_id = ?1",
+                [message_id.as_str()],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
 
         self.conn().execute(
             "INSERT INTO messages_fts (
@@ -859,7 +847,10 @@ fn map_conversation(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationLis
 }
 
 /// Map a message starting at column offset `start`.
-fn map_list_item_partial(row: &rusqlite::Row<'_>, start: usize) -> rusqlite::Result<MessageListItem> {
+fn map_list_item_partial(
+    row: &rusqlite::Row<'_>,
+    start: usize,
+) -> rusqlite::Result<MessageListItem> {
     let i = start;
     Ok(MessageListItem {
         id: MessageId(row.get(i)?),
@@ -872,9 +863,7 @@ fn map_list_item_partial(row: &rusqlite::Row<'_>, start: usize) -> rusqlite::Res
         from_name: row.get(i + 7)?,
         to_list: row.get(i + 8)?,
         date_unix: row.get(i + 9)?,
-        size: row
-            .get::<_, Option<i64>>(i + 10)?
-            .map(|n| n as u32),
+        size: row.get::<_, Option<i64>>(i + 10)?.map(|n| n as u32),
         flags: MessageFlags {
             seen: row.get::<_, i64>(i + 11)? != 0,
             flagged: row.get::<_, i64>(i + 12)? != 0,
@@ -896,9 +885,7 @@ fn map_list_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageListItem> {
         from_name: row.get(7)?,
         to_list: row.get(8)?,
         date_unix: row.get(9)?,
-        size: row
-            .get::<_, Option<i64>>(10)?
-            .map(|n| n as u32),
+        size: row.get::<_, Option<i64>>(10)?.map(|n| n as u32),
         flags: MessageFlags {
             seen: row.get::<_, i64>(11)? != 0,
             flagged: row.get::<_, i64>(12)? != 0,

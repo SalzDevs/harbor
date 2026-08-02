@@ -5,11 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use harbor_core::imap::{
-    idle_wait, logout, select_mailbox, session_supports_idle, IdleWaitResult,
-};
+use harbor_core::imap::{idle_wait, logout, select_mailbox, session_supports_idle, IdleWaitResult};
 use harbor_core::{AccountId, ConnectionStatus, FolderId, FolderMailUpdated, Provider};
-use harbor_db::{AccountRepo, FolderRepo, MessageRepo, Db};
+use harbor_db::{AccountRepo, Db, FolderRepo, MessageRepo};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::sync_headers::{ensure_fresh_access_token, sync_folder_headers_inner};
@@ -98,6 +96,7 @@ fn run_watch_loop(
 
         let watch = resolve_inbox(&db, &account_id);
         let Ok((provider, email, folder_id, imap_name)) = watch else {
+            tracing::warn!("Idle watch: no INBOX to watch for {}", account_id.as_str());
             emit_status(
                 &app,
                 &status,
@@ -113,6 +112,10 @@ fn run_watch_loop(
         let token = match ensure_fresh_access_token(&db, &account_id) {
             Ok(t) => t,
             Err(e) => {
+                tracing::warn!(
+                    "Idle watch: token refresh failed for {}: {e}",
+                    account_id.as_str()
+                );
                 emit_status(
                     &app,
                     &status,
@@ -131,6 +134,10 @@ fn run_watch_loop(
         let mut session = match session {
             Ok((s, _)) => s,
             Err(e) => {
+                tracing::warn!(
+                    "Idle watch: IMAP connect to {imap_name} failed for {}: {e}",
+                    account_id.as_str()
+                );
                 emit_status(
                     &app,
                     &status,
@@ -147,6 +154,11 @@ fn run_watch_loop(
 
         backoff = BACKOFF_START;
         let idle_ok = session_supports_idle(&mut session);
+        tracing::info!(
+            "Idle watch {} for {} (IDLE supported: {idle_ok})",
+            account_id.as_str(),
+            email
+        );
 
         if idle_ok {
             emit_status(&app, &status, &account_id, ConnectionStatus::online("IDLE"));
@@ -159,6 +171,10 @@ fn run_watch_loop(
                     }
                     Ok(IdleWaitResult::TimedOut) => continue,
                     Err(e) => {
+                        tracing::warn!(
+                            "Idle watch: IDLE connection lost for {}: {e}",
+                            account_id.as_str()
+                        );
                         emit_status(
                             &app,
                             &status,
@@ -171,7 +187,12 @@ fn run_watch_loop(
             }
             logout(session);
         } else {
-            emit_status(&app, &status, &account_id, ConnectionStatus::online("polling"));
+            emit_status(
+                &app,
+                &status,
+                &account_id,
+                ConnectionStatus::online("polling"),
+            );
             logout(session);
             while !stop.load(Ordering::SeqCst) {
                 let _ = sync_and_notify(&app, &db, &folder_id, &account_id);
@@ -196,6 +217,7 @@ fn run_watch_loop(
         &account_id,
         ConnectionStatus::offline("Not watching mail"),
     );
+    tracing::info!("Idle watch stopped for {}", account_id.as_str());
 }
 
 fn resolve_inbox(
@@ -243,6 +265,12 @@ fn sync_and_notify(
     };
 
     let new_count = count_after.saturating_sub(count_before);
+    if new_count > 0 {
+        tracing::info!(
+            "Idle watch: {new_count} new messages in folder {}",
+            folder_id.as_str()
+        );
+    }
 
     let _ = app.emit(
         "folder-mail-updated",
@@ -268,12 +296,7 @@ fn sync_and_notify(
     Ok(())
 }
 
-fn maybe_notify(
-    app: &AppHandle,
-    db: &Arc<Mutex<Db>>,
-    new_count: u32,
-    account_id: &AccountId,
-) {
+fn maybe_notify(app: &AppHandle, db: &Arc<Mutex<Db>>, new_count: u32, account_id: &AccountId) {
     // Check pref: off / unfocused / always.
     let pref = {
         let db = match db.lock() {
@@ -323,7 +346,9 @@ fn maybe_notify(
             .unwrap_or_default()
     };
 
-    let _ = app.notification().builder()
+    let _ = app
+        .notification()
+        .builder()
         .title(&title)
         .body(&body)
         .show();

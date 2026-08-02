@@ -16,7 +16,7 @@ use harbor_core::{
     parse_message_bytes, AccountId, FolderId, FolderRole, FolderSyncProgress, FolderSyncResult,
     FolderSyncState, MessageId, Provider,
 };
-use harbor_db::{AccountRepo, FolderRepo, MessageRepo, TokenRepo, Db};
+use harbor_db::{AccountRepo, Db, FolderRepo, MessageRepo, TokenRepo};
 use tauri::{AppHandle, Emitter};
 
 const HEADER_BATCH: usize = 150;
@@ -74,17 +74,25 @@ pub fn ensure_fresh_access_token(
         .as_deref()
         .ok_or_else(|| "no refresh token stored".to_string())?;
 
+    tracing::info!("Refreshing OAuth token for account {}", id.as_str());
     let refreshed = refresh_access_token(TokenRefreshRequest {
         token_url,
         client: &client,
         refresh_token: refresh,
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| {
+        tracing::warn!(
+            "OAuth token refresh failed for account {}: {e}",
+            id.as_str()
+        );
+        e.to_string()
+    })?;
 
     {
         let db = db.lock().map_err(|e| e.to_string())?;
         db.save_tokens(id, &refreshed).map_err(|e| e.to_string())?;
     }
+    tracing::info!("OAuth token refreshed for account {}", id.as_str());
 
     Ok(FreshToken {
         access_token: refreshed.access_token,
@@ -120,18 +128,12 @@ pub fn sync_folder_headers_inner(
         let email = account
             .email
             .ok_or_else(|| "account has no email".to_string())?;
-        (
-            folder.account_id,
-            account.provider,
-            email,
-            folder.imap_name,
-        )
+        (folder.account_id, account.provider, email, folder.imap_name)
     };
 
     let fresh = ensure_fresh_access_token(db, &account_id)?;
-    let (mut session, meta) =
-        select_mailbox(provider, &email, &fresh.access_token, &imap_name)
-            .map_err(|e| e.to_string())?;
+    let (mut session, meta) = select_mailbox(provider, &email, &fresh.access_token, &imap_name)
+        .map_err(|e| e.to_string())?;
 
     let prior = {
         let db = db.lock().map_err(|e| e.to_string())?;
@@ -142,6 +144,12 @@ pub fn sync_folder_headers_inner(
     let mut last_uid = 0u32;
     if let Some(prev) = prior {
         if prev.uidvalidity != meta.uidvalidity {
+            tracing::info!(
+                "uidvalidity changed for folder {} ({} -> {}); clearing local memberships",
+                folder_id.as_str(),
+                prev.uidvalidity,
+                meta.uidvalidity
+            );
             let db = db.lock().map_err(|e| e.to_string())?;
             db.clear_folder_memberships(folder_id)
                 .map_err(|e| e.to_string())?;
@@ -150,6 +158,10 @@ pub fn sync_folder_headers_inner(
         }
     }
 
+    tracing::info!(
+        "Syncing folder {} ({imap_name}) for {email} from last UID {last_uid}",
+        folder_id.as_str()
+    );
     let new_uids = search_uids_after(&mut session, last_uid).map_err(|e| e.to_string())?;
     let total = new_uids.len() as u32;
     let mut fetched = 0u32;
@@ -166,8 +178,7 @@ pub fn sync_folder_headers_inner(
     }
 
     for chunk in new_uids.chunks(HEADER_BATCH) {
-        let headers =
-            fetch_headers_for_uids(&mut session, chunk).map_err(|e| e.to_string())?;
+        let headers = fetch_headers_for_uids(&mut session, chunk).map_err(|e| e.to_string())?;
         {
             let db = db.lock().map_err(|e| e.to_string())?;
             db.upsert_fetched_headers(&account_id, folder_id, &headers)
@@ -205,6 +216,11 @@ pub fn sync_folder_headers_inner(
     }
 
     logout(session);
+
+    tracing::info!(
+        "Synced folder {} ({imap_name}) for {email}: fetched {fetched}/{total}",
+        folder_id.as_str()
+    );
 
     Ok(FolderSyncResult {
         folder_id: folder_id.clone(),
@@ -275,12 +291,16 @@ fn prefetch_inbox_bodies(
         return Ok(());
     }
 
+    let total = targets.len() as u32;
+    tracing::info!(
+        "Prefetching {total} cached bodies for folder {}",
+        folder_id.as_str()
+    );
     let fresh = ensure_fresh_access_token(db, &account_id)?;
     let (mut session, _) = select_mailbox(provider, &email, &fresh.access_token, &imap_name)
         .map_err(|e| e.to_string())?;
 
     let mut done = 0u32;
-    let total = targets.len() as u32;
     let _ = app.emit(
         "folder-prefetch-progress",
         PrefetchProgress {
@@ -303,11 +323,11 @@ fn prefetch_inbox_bodies(
             }
             Err(e) => {
                 // Skip a single failure; keep going for the rest.
-                eprintln!("prefetch uid {uid} failed: {e}");
+                tracing::warn!("prefetch uid {uid} failed: {e}");
             }
         }
         done += 1;
-        if done % PREFETCH_BATCH as u32 == 0 || done == total {
+        if done.is_multiple_of(PREFETCH_BATCH as u32) || done == total {
             let _ = app.emit(
                 "folder-prefetch-progress",
                 PrefetchProgress {
@@ -327,6 +347,10 @@ fn prefetch_inbox_bodies(
             fetched: done,
             total,
         },
+    );
+    tracing::info!(
+        "Prefetch done for folder {}: {done}/{total} bodies",
+        folder_id.as_str()
     );
     Ok(())
 }

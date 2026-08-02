@@ -80,10 +80,7 @@ struct Profile {
 
 fn fetch_profile(access_token: &str) -> Result<Profile> {
     let client = reqwest::blocking::Client::new();
-    let response = client
-        .get(GRAPH_ME_URL)
-        .bearer_auth(access_token)
-        .send()?;
+    let response = client.get(GRAPH_ME_URL).bearer_auth(access_token).send()?;
     let status = response.status();
     let body = response.text()?;
     if !status.is_success() {

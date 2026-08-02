@@ -81,8 +81,10 @@ impl AccountRepo for Db {
                 self.set_meta(SELECTED_ACCOUNT_KEY, id.as_str())
             }
             None => {
-                self.conn()
-                    .execute("DELETE FROM app_meta WHERE key = ?1", [SELECTED_ACCOUNT_KEY])?;
+                self.conn().execute(
+                    "DELETE FROM app_meta WHERE key = ?1",
+                    [SELECTED_ACCOUNT_KEY],
+                )?;
                 Ok(())
             }
         }
@@ -168,10 +170,7 @@ mod tests {
         let gmail = db.add_stub_account(Provider::Gmail).unwrap();
         assert_eq!(gmail.provider, Provider::Gmail);
         assert_eq!(gmail.status, AccountStatus::Stub);
-        assert_eq!(
-            db.selected_account_id().unwrap().as_ref(),
-            Some(&gmail.id)
-        );
+        assert_eq!(db.selected_account_id().unwrap().as_ref(), Some(&gmail.id));
 
         let outlook = db.add_stub_account(Provider::Outlook).unwrap();
         let all = db.list_accounts().unwrap();
@@ -182,10 +181,7 @@ mod tests {
         );
 
         db.set_selected_account_id(Some(&gmail.id)).unwrap();
-        assert_eq!(
-            db.selected_account_id().unwrap().as_ref(),
-            Some(&gmail.id)
-        );
+        assert_eq!(db.selected_account_id().unwrap().as_ref(), Some(&gmail.id));
     }
 
     #[test]

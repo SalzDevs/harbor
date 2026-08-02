@@ -1,6 +1,5 @@
 use harbor_core::{AccountId, Contact, Draft, OutboxItem, OutboxStatus};
 use rusqlite::params;
-use uuid::Uuid;
 
 use crate::error::Result;
 use crate::store::Db;
@@ -94,7 +93,8 @@ impl ComposeRepo for Db {
     }
 
     fn delete_draft(&self, draft_id: &str) -> Result<()> {
-        self.conn().execute("DELETE FROM drafts WHERE id = ?1", [draft_id])?;
+        self.conn()
+            .execute("DELETE FROM drafts WHERE id = ?1", [draft_id])?;
         Ok(())
     }
 
@@ -166,7 +166,8 @@ impl ComposeRepo for Db {
     }
 
     fn delete_outbox(&self, id: &str) -> Result<()> {
-        self.conn().execute("DELETE FROM outbox WHERE id = ?1", [id])?;
+        self.conn()
+            .execute("DELETE FROM outbox WHERE id = ?1", [id])?;
         Ok(())
     }
 
@@ -266,6 +267,7 @@ mod tests {
     use crate::accounts::AccountRepo;
     use crate::Db;
     use harbor_core::Provider;
+    use uuid::Uuid;
 
     #[test]
     fn draft_roundtrip() {
@@ -320,7 +322,8 @@ mod tests {
         db.enqueue_outbox(&account.id, &item).unwrap();
         let queued = db.list_queued_outbox().unwrap();
         assert_eq!(queued.len(), 1);
-        db.update_outbox_status("o1", OutboxStatus::Sent, None).unwrap();
+        db.update_outbox_status("o1", OutboxStatus::Sent, None)
+            .unwrap();
         let queued2 = db.list_queued_outbox().unwrap();
         assert!(queued2.is_empty());
     }
@@ -328,9 +331,11 @@ mod tests {
     #[test]
     fn contact_search() {
         let db = Db::open_in_memory().unwrap();
-        db.record_contact("alice@example.com", Some("Alice")).unwrap();
+        db.record_contact("alice@example.com", Some("Alice"))
+            .unwrap();
         db.record_contact("bob@example.com", None).unwrap();
-        db.record_contact("alice@example.com", Some("Alice")).unwrap();
+        db.record_contact("alice@example.com", Some("Alice"))
+            .unwrap();
         let results = db.search_contacts("alice", 10).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].times_seen, 2);

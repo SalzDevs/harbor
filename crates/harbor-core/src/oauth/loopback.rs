@@ -79,22 +79,20 @@ fn wait_for_callback(server: Server, expected_state: &str) -> Result<String> {
             }
 
             let html = if error.is_some() {
-                result_page("Sign-in failed", "You can close this window and return to Harbor.")
+                result_page(
+                    "Sign-in failed",
+                    "You can close this window and return to Harbor.",
+                )
             } else {
                 result_page(
                     "Signed in to Harbor",
                     "You can close this window and return to the app.",
                 )
             };
-            let header = Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
-                .unwrap();
-            let response = Response::new(
-                StatusCode(200),
-                vec![header],
-                Cursor::new(html),
-                None,
-                None,
-            );
+            let header =
+                Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap();
+            let response =
+                Response::new(StatusCode(200), vec![header], Cursor::new(html), None, None);
             let _ = request.respond(response);
 
             Ok(Callback { code, state, error })
@@ -112,7 +110,9 @@ fn wait_for_callback(server: Server, expected_state: &str) -> Result<String> {
     if callback.state.as_deref() != Some(expected_state) {
         return Err(OAuthError::InvalidState);
     }
-    callback.code.ok_or(OAuthError::Denied("missing code".into()))
+    callback
+        .code
+        .ok_or(OAuthError::Denied("missing code".into()))
 }
 
 fn result_page(title: &str, body: &str) -> String {

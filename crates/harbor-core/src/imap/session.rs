@@ -1,5 +1,5 @@
-use native_tls::TlsConnector;
 use mail_parser::PartType;
+use native_tls::TlsConnector;
 
 use crate::folder::{detect_folder_role, leaf_name, FolderRole};
 use crate::message::{FetchedHeader, MessageFlags};
@@ -53,13 +53,19 @@ fn connect(provider: Provider, email: &str, access_token: &str) -> Result<Sessio
         return Err(ImapError::MissingEmail);
     }
     let host = imap_host(provider);
+    tracing::info!("Connecting IMAP host {host}:993 for {email}");
     let tls = TlsConnector::builder().build()?;
     let client = imap::connect((host, 993), host, &tls)?;
     let auth = XOAuth2 {
         user: email.to_string(),
         access_token: access_token.to_string(),
     };
-    Ok(client.authenticate("XOAUTH2", &auth).map_err(|e| e.0)?)
+    let session = client.authenticate("XOAUTH2", &auth).map_err(|e| {
+        tracing::warn!("IMAP XOAUTH2 authentication failed for {email}: {}", e.0);
+        e.0
+    })?;
+    tracing::info!("IMAP XOAUTH2 authentication successful for {email}");
+    Ok(session)
 }
 
 /// Connect with XOAUTH2 and list mailboxes (LIST).
@@ -99,6 +105,7 @@ pub fn select_mailbox(
     access_token: &str,
     imap_name: &str,
 ) -> Result<(Session, MailboxMeta)> {
+    tracing::info!("Selecting IMAP mailbox '{imap_name}' for {email}");
     let mut session = connect(provider, email, access_token)?;
     let mailbox = session.select(imap_name)?;
     let uidvalidity = mailbox.uid_validity.ok_or(ImapError::MissingUidValidity)?;
@@ -219,9 +226,10 @@ pub fn fetch_body_section(
 
 /// Extract a MIME section from a full message using mail-parser part index.
 fn extract_section_via_parser(raw: &[u8], section: &str) -> Result<Vec<u8>> {
-    let parsed = mail_parser::MessageParser::default().parse(raw)
+    let parsed = mail_parser::MessageParser::default()
+        .parse(raw)
         .ok_or_else(|| ImapError::Other("failed to parse message for section extraction".into()))?;
-    
+
     // section is like "1", "2.1" — navigate to the part.
     let indices: Vec<usize> = section
         .split('.')
@@ -237,7 +245,9 @@ fn extract_section_via_parser(raw: &[u8], section: &str) -> Result<Vec<u8>> {
     // (assuming the root is multipart). For non-multipart, part 1 is the whole message.
     let part_idx = indices[0].saturating_sub(1);
     if part_idx >= parsed.parts.len() {
-        return Err(ImapError::Other(format!("section {section} not found in message")));
+        return Err(ImapError::Other(format!(
+            "section {section} not found in message"
+        )));
     }
 
     let part = &parsed.parts[part_idx];
@@ -245,7 +255,9 @@ fn extract_section_via_parser(raw: &[u8], section: &str) -> Result<Vec<u8>> {
         PartType::Binary(bytes) => Ok(bytes.to_vec()),
         PartType::Text(text) => Ok(text.as_bytes().to_vec()),
         PartType::Html(text) => Ok(text.as_bytes().to_vec()),
-        _ => Err(ImapError::Other(format!("section {section} has no binary body"))),
+        _ => Err(ImapError::Other(format!(
+            "section {section} has no binary body"
+        ))),
     }
 }
 
@@ -448,7 +460,9 @@ fn format_address(addr: &imap_proto::types::Address<'_>) -> Option<String> {
 }
 
 fn normalize_message_id(raw: String) -> String {
-    raw.trim().trim_matches(|c| c == '<' || c == '>').to_string()
+    raw.trim()
+        .trim_matches(|c| c == '<' || c == '>')
+        .to_string()
 }
 
 /// Normalize References header: extract all <id> tokens, space-joined.
@@ -462,6 +476,7 @@ fn normalize_references(raw: &str) -> String {
 }
 
 /// Extract all Message-IDs from a References string, oldest-first.
+#[allow(dead_code)]
 pub fn parse_references_list(references: &str) -> Vec<String> {
     references
         .split_whitespace()

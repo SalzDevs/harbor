@@ -62,7 +62,9 @@ pub fn load_oauth_config(data_dir: &Path) -> Result<OAuthAppConfig> {
         if !id.is_empty() {
             cfg.gmail = Some(OAuthClientConfig {
                 client_id: id,
-                client_secret: std::env::var("HARBOR_GMAIL_CLIENT_SECRET").ok().filter(|s| !s.is_empty()),
+                client_secret: std::env::var("HARBOR_GMAIL_CLIENT_SECRET")
+                    .ok()
+                    .filter(|s| !s.is_empty()),
             });
         }
     }

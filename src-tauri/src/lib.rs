@@ -1,6 +1,7 @@
 mod actions;
 mod commands;
 mod idle;
+mod logging;
 mod state;
 mod sync_headers;
 
@@ -8,6 +9,8 @@ use state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let log_guard = logging::init_logging();
+
     let db = harbor_db::Db::open(harbor_db::database_path()).unwrap_or_else(|err| {
         panic!(
             "failed to open database at {}: {err}",
@@ -19,7 +22,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .manage(AppState::new(db))
+        .manage(AppState::new(db, log_guard))
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
             commands::list_accounts,

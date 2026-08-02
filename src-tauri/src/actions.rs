@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use harbor_core::imap::{select_mailbox, uid_move, uid_store};
 use harbor_core::{AccountId, FolderId, MessageFlags, MessageId, Provider};
-use harbor_db::{AccountRepo, FolderRepo, MessageRepo, Db};
+use harbor_db::{AccountRepo, Db, FolderRepo, MessageRepo};
 
 use crate::sync_headers::ensure_fresh_access_token;
 
@@ -67,14 +67,10 @@ impl DeferredActions {
 
     /// Cancel a deferred action and return its record (so caller can undo local state).
     pub fn cancel(&self, action_id: &str) -> Option<ActionRecord> {
-        self.pending
-            .lock()
-            .unwrap()
-            .remove(action_id)
-            .map(|p| {
-                p.cancel.store(true, Ordering::SeqCst);
-                p.record
-            })
+        self.pending.lock().unwrap().remove(action_id).map(|p| {
+            p.cancel.store(true, Ordering::SeqCst);
+            p.record
+        })
     }
 }
 
@@ -129,7 +125,7 @@ pub fn apply_flag_change(
         if cancel.load(Ordering::SeqCst) {
             return;
         }
-        let _ = run_flag_store(
+        if let Err(e) = run_flag_store(
             &db_clone,
             &account_id,
             provider,
@@ -137,7 +133,9 @@ pub fn apply_flag_change(
             &imap_name,
             uid,
             &flags,
-        );
+        ) {
+            tracing::warn!("Flag store failed for uid {uid} in {imap_name}: {e}");
+        }
     });
 
     Ok(record)
@@ -169,6 +167,7 @@ fn run_flag_store(
         q.push_str("-FLAGS (\\Flagged)");
     }
     let _ = uid_store(&mut session, &[uid], &q);
+    tracing::debug!("Stored flags for uid {uid} in {imap_name} ({email})",);
     Ok(())
 }
 
@@ -228,7 +227,7 @@ pub fn apply_deferred_move(
         if cancel.load(Ordering::SeqCst) {
             return;
         }
-        let _ = run_move(
+        if let Err(e) = run_move(
             &db_clone,
             &account_id,
             provider,
@@ -236,7 +235,11 @@ pub fn apply_deferred_move(
             &source_imap,
             &dest_imap_name,
             removed_uid,
-        );
+        ) {
+            tracing::warn!(
+                "Deferred move failed for uid {removed_uid} ({source_imap} -> {dest_imap_name}): {e}"
+            );
+        }
     });
 
     Ok(record)
