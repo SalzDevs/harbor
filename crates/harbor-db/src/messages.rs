@@ -978,7 +978,7 @@ mod tests {
     fn m2m_same_rfc_message_id() {
         let (db, account_id, inbox, label) = setup2();
         let h = header(10, Some("mid@x"), "Hello", 1000);
-        db.upsert_fetched_headers(&account_id, &inbox, &[h.clone()])
+        db.upsert_fetched_headers(&account_id, &inbox, std::slice::from_ref(&h))
             .unwrap();
         let mut h2 = h;
         h2.uid = 20;

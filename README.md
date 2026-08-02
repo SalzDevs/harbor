@@ -37,6 +37,15 @@ npm run test:rust
 # or: cargo test --workspace
 ```
 
+All checks (also run automatically by the pre-commit hook):
+
+```bash
+npm run fmt:check   # cargo fmt -- --check
+npm run lint:rust   # cargo clippy --workspace --all-targets -- -D warnings
+npm run check       # svelte-check
+npm run test:rust   # cargo test --workspace
+```
+
 Production build:
 
 ```bash

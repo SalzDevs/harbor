@@ -1,0 +1,4 @@
+npx lint-staged
+npm run check
+npm run lint:rust
+npm run test:rust

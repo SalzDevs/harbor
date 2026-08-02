@@ -21,3 +21,6 @@ vite.config.ts.timestamp-*
 
 # opencode
 .opencode/
+
+# husky (auto-generated)
+.husky/_
