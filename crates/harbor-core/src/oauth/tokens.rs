@@ -67,6 +67,7 @@ pub fn refresh_access_token(req: TokenRefreshRequest<'_>) -> Result<OAuthTokenSe
         tracing::warn!("OAuth token response parse error: {e}");
         OAuthError::TokenRefresh(format!("parse: {e}; body={body}"))
     })?;
+    tracing::debug!("OAuth token refresh granted scopes: {:?}", parsed.scope);
     let mut tokens = parsed.into_token_set();
     // Google may omit refresh_token on refresh; keep the old one.
     if tokens.refresh_token.is_none() {
@@ -107,6 +108,7 @@ pub(crate) fn exchange_code(
         tracing::warn!("OAuth authorization code response parse error: {e}");
         OAuthError::TokenExchange(format!("parse: {e}; body={body}"))
     })?;
+    tracing::debug!("OAuth code exchange granted scopes: {:?}", parsed.scope);
     tracing::info!("OAuth authorization code exchange succeeded");
     Ok(parsed.into_token_set())
 }

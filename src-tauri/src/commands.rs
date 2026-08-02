@@ -27,6 +27,7 @@ pub struct AppInfo {
 
 #[tauri::command]
 pub fn app_info() -> AppInfo {
+    tracing::debug!("command: app_info");
     let data_dir = harbor_db::data_dir();
     let oauth = load_oauth_config(&data_dir).ok();
     AppInfo {
@@ -42,6 +43,7 @@ pub fn app_info() -> AppInfo {
 
 #[tauri::command]
 pub fn list_accounts(state: State<'_, AppState>) -> Result<Vec<Account>, String> {
+    tracing::debug!("command: list_accounts");
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.list_accounts().map_err(|e| e.to_string())
 }
@@ -142,6 +144,7 @@ pub fn refresh_account_token(
 
 #[tauri::command]
 pub fn list_folders(state: State<'_, AppState>, account_id: String) -> Result<Vec<Folder>, String> {
+    tracing::debug!(account = %account_id, "command: list_folders");
     let id = AccountId(account_id);
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.list_folders(&id).map_err(|e| e.to_string())
@@ -202,6 +205,7 @@ pub fn sync_folder_headers(
     state: State<'_, AppState>,
     folder_id: String,
 ) -> Result<FolderSyncResult, String> {
+    tracing::debug!(folder = %folder_id, "command: sync_folder_headers");
     let folder_id = FolderId(folder_id);
     let result = sync_folder_headers_inner(Some(&app), &state.db, &folder_id)?;
     // Kick a background prefetch of recent INBOX bodies (no-op for non-INBOX).
@@ -288,6 +292,7 @@ pub fn select_account(
 
 #[tauri::command]
 pub fn selected_account_id(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    tracing::debug!("command: selected_account_id");
     let db = state.db.lock().map_err(|e| e.to_string())?;
     Ok(db
         .selected_account_id()
@@ -312,6 +317,7 @@ pub fn watch_account(
     state: State<'_, AppState>,
     account_id: String,
 ) -> Result<(), String> {
+    tracing::debug!(account = %account_id, "command: watch_account");
     let id = AccountId(account_id);
     start_idle_watch(&app, &state, &id);
     Ok(())
@@ -326,6 +332,7 @@ pub fn list_conversations(
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> Result<ConversationPage, String> {
+    tracing::debug!(folder = %folder_id, "command: list_conversations");
     let id = FolderId(folder_id);
     let limit = limit.unwrap_or(100).min(500);
     let offset = offset.unwrap_or(0);

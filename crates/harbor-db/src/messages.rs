@@ -536,39 +536,31 @@ impl MessageRepo for Db {
         )?;
 
         // For each thread, get the latest message + counts.
+        // Window-function single pass: a self-join "latest per thread" pattern was O(n^2)
+        // on large mailboxes (minutes on 14k messages); ROW_NUMBER is linear.
         let mut stmt = self.conn().prepare(
-            "SELECT
-                m.thread_root,
-                m.account_id,
-                mf.folder_id,
-                COUNT(*) AS msg_count,
-                SUM(CASE WHEN m.is_seen = 0 THEN 1 ELSE 0 END) AS unread,
-                -- latest message columns (the one with max date_unix, then max uid)
-                m_latest.id, m_latest.account_id, mf_latest.folder_id, mf_latest.uid,
-                m_latest.rfc_message_id, m_latest.subject, m_latest.from_address,
-                m_latest.from_name, m_latest.to_list, m_latest.date_unix, m_latest.size,
-                m_latest.is_seen, m_latest.is_flagged, m_latest.is_answered, m_latest.is_draft
-             FROM message_folders mf
-             JOIN messages m ON m.id = mf.message_id
-             JOIN (
-                SELECT mf2.folder_id, mf2.message_id, mf2.uid, m2.id as mid,
-                       m2.account_id, m2.rfc_message_id, m2.subject, m2.from_address,
-                       m2.from_name, m2.to_list, m2.date_unix, m2.size,
-                       m2.is_seen, m2.is_flagged, m2.is_answered, m2.is_draft, m2.thread_root
-                FROM message_folders mf2
-                JOIN messages m2 ON m2.id = mf2.message_id
-                WHERE mf2.folder_id = ?1 AND m2.thread_root IS NOT NULL
-                ORDER BY m2.date_unix DESC, mf2.uid DESC
-             ) AS latest_join ON latest_join.thread_root = m.thread_root
-             JOIN messages m_latest ON m_latest.id = latest_join.mid
-             JOIN message_folders mf_latest ON mf_latest.message_id = m_latest.id AND mf_latest.folder_id = ?1
-             WHERE mf.folder_id = ?1 AND m.thread_root IS NOT NULL
-             GROUP BY m.thread_root, m.account_id, mf.folder_id,
-                       m_latest.id, m_latest.account_id, mf_latest.folder_id, mf_latest.uid,
-                       m_latest.rfc_message_id, m_latest.subject, m_latest.from_address,
-                       m_latest.from_name, m_latest.to_list, m_latest.date_unix, m_latest.size,
-                       m_latest.is_seen, m_latest.is_flagged, m_latest.is_answered, m_latest.is_draft
-             ORDER BY m_latest.date_unix DESC, mf_latest.uid DESC
+            "SELECT thread_root, account_id, folder_id, msg_count, unread,
+                    id, account_id, folder_id, uid,
+                    rfc_message_id, subject, from_address, from_name, to_list,
+                    date_unix, size, is_seen, is_flagged, is_answered, is_draft
+             FROM (
+                SELECT m.thread_root, m.account_id, mf.folder_id,
+                       COUNT(*) OVER (PARTITION BY m.thread_root, mf.folder_id) AS msg_count,
+                       SUM(CASE WHEN m.is_seen = 0 THEN 1 ELSE 0 END)
+                           OVER (PARTITION BY m.thread_root, mf.folder_id) AS unread,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY m.thread_root, mf.folder_id
+                           ORDER BY m.date_unix DESC, mf.uid DESC
+                       ) AS rn,
+                       m.id, mf.uid, m.rfc_message_id, m.subject, m.from_address,
+                       m.from_name, m.to_list, m.date_unix, m.size,
+                       m.is_seen, m.is_flagged, m.is_answered, m.is_draft
+                FROM message_folders mf
+                JOIN messages m ON m.id = mf.message_id
+                WHERE mf.folder_id = ?1 AND m.thread_root IS NOT NULL
+             )
+             WHERE rn = 1
+             ORDER BY date_unix DESC, uid DESC
              LIMIT ?2 OFFSET ?3",
         )?;
 
@@ -1007,6 +999,51 @@ mod tests {
         let page = db.list_messages(&inbox, 50, 0).unwrap();
         assert_eq!(page.messages[0].subject, "new");
         assert_eq!(page.messages[1].subject, "old");
+    }
+
+    fn header_thread(
+        uid: u32,
+        mid: &str,
+        in_reply_to: Option<&str>,
+        subject: &str,
+        date: i64,
+        seen: bool,
+    ) -> FetchedHeader {
+        let mut h = header(uid, Some(mid), subject, date);
+        h.in_reply_to = in_reply_to.map(|s| s.to_string());
+        h.flags.seen = seen;
+        h
+    }
+
+    #[test]
+    fn conversations_group_threads_and_pick_latest() {
+        let (db, account_id, inbox, _) = setup2();
+        db.upsert_fetched_headers(
+            &account_id,
+            &inbox,
+            &[
+                header_thread(1, "m1", Some("root-1"), "root msg", 100, false),
+                header_thread(2, "m2", Some("root-1"), "reply 1", 200, true),
+                header_thread(3, "m3", Some("root-1"), "reply 2", 300, false),
+                header_thread(4, "m4", Some("root-2"), "other", 150, false),
+            ],
+        )
+        .unwrap();
+
+        let page = db.list_conversations(&inbox, 50, 0).unwrap();
+        assert_eq!(page.total, 2);
+        // Newest thread first: root-1 (latest date 300) then root-2 (150).
+        assert_eq!(page.conversations[0].thread_root, "root-1");
+        assert_eq!(page.conversations[0].message_count, 3);
+        assert_eq!(page.conversations[0].unread_count, 2);
+        assert_eq!(page.conversations[0].latest.subject, "reply 2");
+        assert_eq!(page.conversations[1].thread_root, "root-2");
+        assert_eq!(page.conversations[1].message_count, 1);
+        assert_eq!(page.conversations[1].latest.subject, "other");
+        // Pagination: offset skips the newest thread.
+        let next = db.list_conversations(&inbox, 1, 1).unwrap();
+        assert_eq!(next.conversations.len(), 1);
+        assert_eq!(next.conversations[0].thread_root, "root-2");
     }
 
     #[test]

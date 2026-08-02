@@ -61,7 +61,7 @@ npm run desktop:build
 ```
 
 Produces `src-tauri/target/release/bundle/macos/Harbor.app` and a `.dmg` installer.
-The app bundle goes to `/Applications`. Data lands in `~/Library/Application Support/Harbor/`.
+The app bundle goes to `/Applications`. Data lands in `~/Library/Application Support/app.Harbor.Harbor/`.
 
 Signing/notarization and auto-update can be staged by setting these env vars before build:
 
@@ -101,7 +101,7 @@ Tag a push with `v*` to trigger the GitHub Actions release workflow, which build
 
 SQLite lives in the OS app-data directory:
 
-- macOS: `~/Library/Application Support/Harbor/harbor.sqlite3`
+- macOS: `~/Library/Application Support/app.Harbor.Harbor/harbor.sqlite3`
 - Linux: `~/.local/share/harbor/harbor.sqlite3` (or `$XDG_DATA_HOME/harbor`)
 
 ## Logging
