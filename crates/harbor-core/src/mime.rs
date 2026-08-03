@@ -384,4 +384,77 @@ mod tests {
             .unwrap_or(false));
         assert!(body.attachments.iter().any(|a| a.filename == "img1.png"));
     }
+
+    #[test]
+    fn sanitize_removes_script_style_and_media_handlers() {
+        let dirty = concat!(
+            r#"<p>Hi</p>"#,
+            r#"<script>alert(1);</script>"#,
+            r#"<style>body{display:none}</style>"#,
+            r#"<img src="x.png" onerror="alert(1)">"#,
+            r#"<a href="https://ok.example" onclick="alert(1)">link</a>"#,
+            r#"<iframe src="https://evil.example"></iframe>"#,
+            r#"<object data="https://evil.example"></object>"#,
+            r#"<embed src="https://evil.example">"#,
+        );
+        let clean = sanitize_html(dirty);
+        let lower = clean.to_ascii_lowercase();
+        assert!(!lower.contains("script"), "script leaked: {lower}");
+        assert!(
+            !lower.contains("alert("),
+            "callable content leaked: {lower}"
+        );
+        assert!(!lower.contains("onerror"), "onerror leaked: {lower}");
+        assert!(!lower.contains("onclick"), "onclick leaked: {lower}");
+        assert!(!lower.contains("<style"), "style leaked: {lower}");
+        assert!(!lower.contains("iframe"), "iframe leaked: {lower}");
+        assert!(!lower.contains("object"), "object leaked: {lower}");
+        assert!(!lower.contains("embed"), "embed leaked: {lower}");
+        assert!(clean.contains("Hi"));
+        assert!(clean.contains("link"));
+    }
+
+    #[test]
+    fn sanitize_removes_javascript_urls() {
+        let dirty = r#"<a href="javascript:alert(1)">totally safe</a>"#;
+        let clean = sanitize_html(dirty);
+        let lower = clean.to_ascii_lowercase();
+        assert!(
+            !lower.contains("javascript:"),
+            "javascript: leaked: {lower}"
+        );
+        assert!(clean.contains("totally safe"));
+    }
+
+    #[test]
+    fn sanitize_keeps_legitimate_formatting() {
+        let dirty = concat!(
+            r#"<p>First <strong>bold</strong> <em>em</em></p>"#,
+            r#"<ul><li>one</li><li>two</li></ul>"#,
+            r#"<table><tr><td>cell</td></tr></table>"#,
+            r#"<pre><code>let x = 1;</code></pre>"#,
+            r#"<a href="https://example.com/x?y=1">link</a>"#,
+            r#"<img src="http://cdn.example.com/a.png" alt="pic">"#,
+        );
+        let clean = sanitize_html(dirty);
+        assert!(clean.contains("First"), "text dropped: {clean}");
+        assert!(clean.contains("<strong>bold</strong>"));
+        assert!(clean.contains("<ul>"));
+        assert!(clean.contains("<table>"));
+        assert!(clean.contains("<pre>"));
+        assert!(clean.contains("<code>"));
+        assert!(clean.contains("href=\"https://example.com"));
+        assert!(clean.contains("src=\"http://cdn.example.com"));
+    }
+
+    #[test]
+    fn sanitize_treats_svg_as_text_content_only() {
+        let dirty = r#"<svg onload="alert(1)"><foreignObject><div>hi</div></foreignObject></svg>"#;
+        let clean = sanitize_html(dirty);
+        let lower = clean.to_ascii_lowercase();
+        assert!(!lower.contains("<svg"), "svg leaked: {lower}");
+        assert!(!lower.contains("onload"), "onload leaked: {lower}");
+        assert!(!lower.contains("foreignobject"));
+        assert!(!lower.contains("alert("), "handler body leaked: {lower}");
+    }
 }
