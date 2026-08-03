@@ -1,7 +1,5 @@
 //! SMTP send via XOAUTH2.
 
-use native_tls::TlsConnector;
-
 use crate::Provider;
 
 #[derive(Debug, thiserror::Error)]
@@ -50,7 +48,7 @@ pub fn send_message(
     msg: &OutgoingMessage,
 ) -> Result<()> {
     use lettre::message::{header::ContentType, Mailbox, Message, MultiPart, SinglePart};
-    use lettre::transport::smtp::authentication::Credentials;
+    use lettre::transport::smtp::authentication::{Credentials, Mechanism};
     use lettre::Transport;
 
     if email.is_empty() {
@@ -142,14 +140,13 @@ pub fn send_message(
     };
 
     // Connect with STARTTLS + XOAUTH2.
-    let _tls = TlsConnector::builder().build()?;
-
     // XOAUTH2: user = email, password = access_token.
     let creds = Credentials::new(email.to_string(), access_token.to_string());
 
     let transport = lettre::SmtpTransport::starttls_relay(host)?
         .port(port)
         .credentials(creds)
+        .authentication(vec![Mechanism::Xoauth2])
         .build();
 
     if let Err(e) = transport.send(&built_email) {
