@@ -59,6 +59,26 @@ impl AccountRepo for Db {
         email: String,
         display_name: Option<String>,
     ) -> Result<Account> {
+        // Reuse an existing account for the same provider + email instead of
+        // inserting a duplicate (re-signing into an already-connected account
+        // otherwise creates a second account with its own tokens/sync).
+        if let Some(existing) = find_account_by_provider_email(self, provider, &email)? {
+            self.conn().execute(
+                "UPDATE accounts
+                 SET status = ?1, email = ?2, display_name = ?3
+                 WHERE id = ?4",
+                params![
+                    AccountStatus::Connected.as_str(),
+                    email,
+                    display_name,
+                    existing.id.as_str()
+                ],
+            )?;
+            self.set_selected_account_id(Some(&existing.id))?;
+            return self.get_account(&existing.id)?.ok_or_else(|| {
+                DbError::NotFound(format!("account {} after reuse", existing.id.as_str()))
+            });
+        }
         insert_account(
             self,
             provider,
@@ -88,6 +108,24 @@ impl AccountRepo for Db {
                 Ok(())
             }
         }
+    }
+}
+
+fn find_account_by_provider_email(
+    db: &Db,
+    provider: Provider,
+    email: &str,
+) -> Result<Option<Account>> {
+    let mut stmt = db.conn().prepare(
+        "SELECT id, provider, status, email, display_name, created_at
+         FROM accounts
+         WHERE provider = ?1 AND email = ?2 COLLATE NOCASE",
+    )?;
+    let mut rows = stmt.query(params![provider.as_str(), email])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(map_account(row)?))
+    } else {
+        Ok(None)
     }
 }
 
@@ -192,6 +230,52 @@ mod tests {
             .unwrap();
         assert_eq!(account.status, AccountStatus::Connected);
         assert_eq!(account.email.as_deref(), Some("a@gmail.com"));
+    }
+
+    #[test]
+    fn re_sign_in_reuses_account() {
+        let db = Db::open_in_memory().unwrap();
+
+        let first = db
+            .add_connected_account(Provider::Gmail, "a@gmail.com".into(), Some("A".into()))
+            .unwrap();
+
+        // Simulate re-running the sign-in flow for the same Gmail address.
+        let second = db
+            .add_connected_account(
+                Provider::Gmail,
+                "a@gmail.com".into(),
+                Some("New Name".into()),
+            )
+            .unwrap();
+
+        assert_eq!(
+            first.id, second.id,
+            "sign-in must reuse the existing account"
+        );
+        assert_eq!(second.display_name.as_deref(), Some("New Name"));
+        assert_eq!(db.list_accounts().unwrap().len(), 1);
+
+        // Different case should also dedup (email comparison is NOCASE).
+        let upper = db
+            .add_connected_account(Provider::Gmail, "A@gmail.com".into(), Some("Upper".into()))
+            .unwrap();
+        assert_eq!(upper.id, first.id);
+        assert_eq!(db.list_accounts().unwrap().len(), 1);
+        let all = db.list_accounts().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].email.as_deref(), Some("A@gmail.com"));
+
+        // A different provider with the same email is a distinct account.
+        let outlook = db
+            .add_connected_account(
+                Provider::Outlook,
+                "a@gmail.com".into(),
+                Some("Outlook".into()),
+            )
+            .unwrap();
+        assert_ne!(outlook.id, first.id);
+        assert_eq!(db.list_accounts().unwrap().len(), 2);
     }
 
     #[test]
