@@ -3,6 +3,7 @@ use native_tls::TlsConnector;
 
 use crate::folder::{detect_folder_role, leaf_name, FolderRole};
 use crate::message::{FetchedHeader, MessageFlags};
+use crate::rfc2047::decode_encoded_words;
 use crate::Provider;
 
 use super::xoauth2::XOAuth2;
@@ -366,7 +367,7 @@ fn parse_fetch(fetch: &imap::types::Fetch, uid: u32) -> FetchedHeader {
     if let Some(env) = fetch.envelope() {
         subject = decode_opt_bytes(env.subject).unwrap_or_default();
         if let Some(from) = env.from.as_ref().and_then(|v| v.first()) {
-            from_name = decode_opt_bytes(from.name);
+            from_name = decode_opt_bytes(from.name).map(|n| decode_encoded_words(&n));
             from_address = format_address(from);
         }
         if let Some(to) = &env.to {
@@ -400,8 +401,15 @@ fn parse_fetch(fetch: &imap::types::Fetch, uid: u32) -> FetchedHeader {
                     references = Some(normalize_references(&refs));
                 }
             }
+            if subject.is_empty() {
+                if let Some(subj) = extract_header_field(text, "subject") {
+                    subject = decode_encoded_words(&subj);
+                }
+            }
         }
     }
+
+    subject = decode_encoded_words(&subject);
 
     // INTERNALDATE fallback
     if date_unix == 0 {

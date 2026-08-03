@@ -100,6 +100,10 @@ pub trait MessageRepo {
 
     /// Reindex a single message into the FTS table (called after upsert or body save).
     fn reindex_message_fts(&self, message_id: &MessageId) -> Result<()>;
+
+    /// Decode RFC 2047 encoded-words in previously-synced `subject` rows in
+    /// place. Returns the number of rows updated.
+    fn repair_encoded_subjects(&self) -> Result<u64>;
 }
 
 impl MessageRepo for Db {
@@ -708,6 +712,43 @@ impl MessageRepo for Db {
 
         Ok(())
     }
+
+    fn repair_encoded_subjects(&self) -> Result<u64> {
+        let mut stmt = self
+            .conn()
+            .prepare("SELECT id, subject FROM messages WHERE subject LIKE '=?%'")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        let mut changed = Vec::new();
+        for row in rows {
+            let (id, subject) = row?;
+            if subject.contains("=?") {
+                let decoded = harbor_core::rfc2047::decode_encoded_words(&subject);
+                if decoded != subject {
+                    changed.push((id, decoded));
+                }
+            }
+        }
+        drop(stmt);
+
+        let tx = self.conn().unchecked_transaction()?;
+        {
+            let mut update = tx.prepare("UPDATE messages SET subject = ?2 WHERE id = ?1")?;
+            for (id, decoded) in &changed {
+                update.execute(params![id, decoded])?;
+            }
+        }
+        tx.commit()?;
+
+        // Keep the FTS index in sync with the cleaned subjects.
+        for (id, _) in &changed {
+            self.reindex_message_fts(&MessageId(id.clone()))?;
+        }
+
+        Ok(changed.len() as u64)
+    }
 }
 
 fn resolve_or_insert_message(
@@ -999,6 +1040,33 @@ mod tests {
         let page = db.list_messages(&inbox, 50, 0).unwrap();
         assert_eq!(page.messages[0].subject, "new");
         assert_eq!(page.messages[1].subject, "old");
+    }
+
+    #[test]
+    fn repair_decodes_encoded_subjects_in_place() {
+        let (db, account_id, inbox, _) = setup2();
+        db.upsert_fetched_headers(
+            &account_id,
+            &inbox,
+            &[
+                header(1, Some("a"), "plain", 100),
+                header(2, Some("b"), "=?UTF-8?Q?Ol=C3=A1,_mundo?=", 200),
+            ],
+        )
+        .unwrap();
+
+        let before = db.list_messages(&inbox, 50, 0).unwrap();
+        assert_eq!(before.messages[0].subject, "=?UTF-8?Q?Ol=C3=A1,_mundo?=");
+
+        let updated = db.repair_encoded_subjects().unwrap();
+        assert_eq!(updated, 1);
+
+        let after = db.list_messages(&inbox, 50, 0).unwrap();
+        assert_eq!(after.messages[0].subject, "Olá, mundo");
+        assert_eq!(after.messages[1].subject, "plain");
+
+        // Idempotent: nothing left to repair.
+        assert_eq!(db.repair_encoded_subjects().unwrap(), 0);
     }
 
     fn header_thread(

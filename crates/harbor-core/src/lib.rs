@@ -8,6 +8,7 @@ pub mod message;
 pub mod mime;
 pub mod oauth;
 pub mod paths;
+pub mod rfc2047;
 pub mod smtp;
 pub mod strings;
 
