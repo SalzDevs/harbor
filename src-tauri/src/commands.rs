@@ -207,7 +207,14 @@ pub async fn sync_folder_headers(
 ) -> Result<FolderSyncResult, String> {
     tracing::debug!(folder = %folder_id, "command: sync_folder_headers");
     let folder_id = FolderId(folder_id);
-    let result = sync_folder_headers_inner(Some(&app), &state.db, &folder_id)?;
+    let db = std::sync::Arc::clone(&state.db);
+    let app_for_blocking = app.clone();
+    let folder_for_blocking = folder_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        sync_folder_headers_inner(Some(&app_for_blocking), &db, &folder_for_blocking)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     // Kick a background prefetch of recent INBOX bodies (no-op for non-INBOX).
     crate::sync_headers::spawn_prefetch_inbox_bodies(
         app,
@@ -711,7 +718,15 @@ pub async fn download_attachment(
         (account.provider, email)
     };
 
-    let fresh = ensure_fresh_access_token(&state.db, &location.account_id)?;
+    let fresh = {
+        let db = std::sync::Arc::clone(&state.db);
+        tauri::async_runtime::spawn_blocking(move || {
+            ensure_fresh_access_token(&db, &location.account_id)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?
+    };
     let bytes = tauri::async_runtime::spawn_blocking(move || {
         fetch_body_section(
             provider,
