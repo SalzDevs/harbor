@@ -56,15 +56,22 @@ fn extract_bodies(msg: &mail_parser::Message<'_>) -> (Option<String>, Option<Str
                 })
                 .unwrap_or_default()
                 .to_ascii_lowercase();
+            // A named part (filename / name attribute) is an attachment, never
+            // a body — even if its media type is text/plain or text/html.
+            let is_attachment = part.attachment_name().is_some();
 
             match &part.body {
-                PartType::Text(text) if plain.is_none() && ct.starts_with("text/plain") => {
+                PartType::Text(text)
+                    if plain.is_none() && ct.starts_with("text/plain") && !is_attachment =>
+                {
                     plain = Some(text.to_string());
                 }
-                PartType::Html(text) if html.is_none() => {
+                PartType::Html(text) if html.is_none() && !is_attachment => {
                     html = Some(text.to_string());
                 }
-                PartType::Text(text) if html.is_none() && ct.starts_with("text/html") => {
+                PartType::Text(text)
+                    if html.is_none() && ct.starts_with("text/html") && !is_attachment =>
+                {
                     html = Some(text.to_string());
                 }
                 _ => {}
@@ -82,6 +89,11 @@ fn extract_bodies(msg: &mail_parser::Message<'_>) -> (Option<String>, Option<Str
 fn extract_attachments(msg: &mail_parser::Message<'_>) -> Vec<AttachmentInfo> {
     let mut out = Vec::new();
     for (idx, part) in msg.parts.iter().enumerate() {
+        // Skip the top-level message and multipart containers (their children
+        // are listed separately in `parts`).
+        if matches!(&part.body, PartType::Multipart(_) | PartType::Message(_)) {
+            continue;
+        }
         // Skip text/plain and text/html (those are body parts, not attachments).
         let _ct = part
             .content_type()
@@ -223,5 +235,153 @@ mod tests {
         assert!(!html_has_remote_images(
             r#"<img src="data:image/png;base64,xx">"#
         ));
+    }
+
+    #[test]
+    fn alternative_extracts_text_and_html() {
+        let raw = concat!(
+            "From: a@example.com\r\n",
+            "To: b@example.com\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: multipart/alternative; boundary=\"ALT\"\r\n\r\n",
+            "--ALT\r\nContent-Type: text/plain\r\n\r\n",
+            "Plain body\r\n",
+            "--ALT\r\nContent-Type: text/html\r\n\r\n",
+            "<p>Html body</p>\r\n",
+            "--ALT--\r\n",
+        );
+        let body = parse_message_bytes(raw.as_bytes());
+        assert!(body
+            .text_plain
+            .as_deref()
+            .map(|t| t.contains("Plain body"))
+            .unwrap_or(false));
+        assert!(body
+            .text_html
+            .as_deref()
+            .map(|h| h.contains("Html body"))
+            .unwrap_or(false));
+        assert!(body.attachments.is_empty());
+    }
+
+    #[test]
+    fn text_attachment_is_not_the_body() {
+        let raw = concat!(
+            "From: a@b.com\r\nMIME-Version: 1.0\r\n",
+            "Content-Type: multipart/mixed; boundary=\"MIX\"\r\n\r\n",
+            "--MIX\r\nContent-Type: text/html\r\n\r\n",
+            "<p>Main html body</p>\r\n",
+            "--MIX\r\nContent-Type: text/plain; name=\"notes.txt\"\r\n",
+            "Content-Disposition: attachment; filename=\"notes.txt\"\r\n\r\n",
+            "this is an attachment, not the body\r\n",
+            "--MIX--\r\n",
+        );
+        let body = parse_message_bytes(raw.as_bytes());
+        // The rel-safe body text derives from the HTML part; the attachment
+        // text must never leak into it (or the plain body).
+        assert!(!body
+            .text_html
+            .as_deref()
+            .map(|h| h.contains("this is an attachment"))
+            .unwrap_or(false));
+        assert!(!body
+            .text_plain
+            .as_deref()
+            .map(|t| t.contains("this is an attachment"))
+            .unwrap_or(false));
+        assert!(body
+            .text_html
+            .as_deref()
+            .map(|h| h.contains("Main html body"))
+            .unwrap_or(false));
+        let names: Vec<&str> = body
+            .attachments
+            .iter()
+            .map(|a| a.filename.as_str())
+            .collect();
+        assert_eq!(names, vec!["notes.txt"]);
+    }
+
+    #[test]
+    fn nested_multipart_extracts_body_and_attachment() {
+        let raw = concat!(
+            "From: a@b.com\r\nMIME-Version: 1.0\r\n",
+            "Content-Type: multipart/mixed; boundary=\"OUT\"\r\n\r\n",
+            "--OUT\r\nContent-Type: multipart/alternative; boundary=\"ALT\"\r\n\r\n",
+            "--ALT\r\nContent-Type: text/plain\r\n\r\n",
+            "Nested plain\r\n",
+            "--ALT\r\nContent-Type: text/html\r\n\r\n",
+            "<p>Nested html</p>\r\n",
+            "--ALT--\r\n",
+            "--OUT\r\nContent-Type: application/pdf; name=\"f.pdf\"\r\n",
+            "Content-Disposition: attachment; filename=\"f.pdf\"\r\n",
+            "Content-Transfer-Encoding: base64\r\n\r\n",
+            "JVBERi0xLjQK\r\n",
+            "--OUT--\r\n",
+        );
+        let body = parse_message_bytes(raw.as_bytes());
+        assert!(body
+            .text_plain
+            .as_deref()
+            .map(|t| t.contains("Nested plain"))
+            .unwrap_or(false));
+        assert!(body
+            .text_html
+            .as_deref()
+            .map(|h| h.contains("Nested html"))
+            .unwrap_or(false));
+        let names: Vec<&str> = body
+            .attachments
+            .iter()
+            .map(|a| a.filename.as_str())
+            .collect();
+        assert_eq!(names, vec!["f.pdf"]);
+    }
+
+    #[test]
+    fn decodes_quoted_printable_body() {
+        let raw = concat!(
+            "From: a@b.com\r\nMIME-Version: 1.0\r\n",
+            "Content-Type: text/plain; charset=utf-8\r\n",
+            "Content-Transfer-Encoding: quoted-printable\r\n\r\n",
+            "Ol=C3=A1, =\r\n",
+            "second line\r\n",
+        );
+        let body = parse_message_bytes(raw.as_bytes());
+        assert_eq!(body.text_plain.as_deref(), Some("Olá, second line\r\n"));
+    }
+
+    #[test]
+    fn decodes_base64_body() {
+        let raw = concat!(
+            "From: a@b.com\r\nMIME-Version: 1.0\r\n",
+            "Content-Type: text/plain\r\n",
+            "Content-Transfer-Encoding: base64\r\n\r\n",
+            "SGVsbG8gQmFzZTY0\r\n",
+        );
+        let body = parse_message_bytes(raw.as_bytes());
+        assert_eq!(body.text_plain.as_deref(), Some("Hello Base64"));
+    }
+
+    #[test]
+    fn inline_png_with_cid_is_attachment_metadata_not_body() {
+        let raw = concat!(
+            "From: a@b.com\r\nMIME-Version: 1.0\r\n",
+            "Content-Type: multipart/related; boundary=\"REL\"\r\n\r\n",
+            "--REL\r\nContent-Type: text/html\r\n\r\n",
+            "<p>See <img src=\"cid:img1\"></p>\r\n",
+            "--REL\r\nContent-Type: image/png; name=\"img1.png\"\r\n",
+            "Content-ID: <img1>\r\n",
+            "Content-Transfer-Encoding: base64\r\n\r\n",
+            "AAECAw==\r\n",
+            "--REL--\r\n",
+        );
+        let body = parse_message_bytes(raw.as_bytes());
+        assert!(body
+            .text_html
+            .as_deref()
+            .map(|h| h.contains("img1"))
+            .unwrap_or(false));
+        assert!(body.attachments.iter().any(|a| a.filename == "img1.png"));
     }
 }
