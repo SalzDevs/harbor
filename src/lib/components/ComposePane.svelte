@@ -89,8 +89,8 @@
         bcc,
         subject,
         bodyText: body,
-        inReplyTo: replyTo?.rfcMessageId ?? null,
-        references: replyTo?.rfcMessageId ?? null,
+        inReplyTo: replyTo?.rfcMessageId ?? replyTo?.threadRoot ?? null,
+        references: replyTo?.rfcMessageId ?? replyTo?.threadRoot ?? null,
       });
       onsent?.();
       onclose?.();

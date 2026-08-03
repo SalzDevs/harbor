@@ -72,6 +72,7 @@ export type MessageDetail = {
   accountId: string;
   folderId: string;
   uid: number;
+  threadRoot: string;
   rfcMessageId: string | null;
   subject: string;
   fromAddress: string | null;

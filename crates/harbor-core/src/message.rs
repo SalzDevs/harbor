@@ -130,6 +130,7 @@ pub struct MessageDetail {
     pub account_id: AccountId,
     pub folder_id: FolderId,
     pub uid: u32,
+    pub thread_root: String,
     pub rfc_message_id: Option<String>,
     pub subject: String,
     pub from_address: Option<String>,

@@ -361,7 +361,7 @@ impl MessageRepo for Db {
         let mut stmt = self.conn().prepare(
             "SELECT m.id, m.account_id, mf.folder_id, mf.uid, m.rfc_message_id,
                     m.subject, m.from_address, m.from_name, m.to_list, m.date_unix, m.size,
-                    m.is_seen, m.is_flagged, m.is_answered, m.is_draft
+                    m.is_seen, m.is_flagged, m.is_answered, m.is_draft, m.thread_root
              FROM messages m
              JOIN message_folders mf ON mf.message_id = m.id
              WHERE mf.folder_id = ?1 AND m.id = ?2",
@@ -389,6 +389,7 @@ impl MessageRepo for Db {
             account_id: list.account_id,
             folder_id: list.folder_id,
             uid: list.uid,
+            thread_root: row.get(15)?,
             rfc_message_id: list.rfc_message_id,
             subject: list.subject,
             from_address: list.from_address,
@@ -1122,6 +1123,35 @@ mod tests {
         assert_eq!(db.list_messages(&inbox, 10, 0).unwrap().total, 1);
         db.clear_folder_memberships(&inbox).unwrap();
         assert_eq!(db.list_messages(&inbox, 10, 0).unwrap().total, 0);
+    }
+
+    #[test]
+    fn reply_to_midless_message_joins_thread() {
+        let (db, account_id, inbox, _) = setup2();
+        // MID-less message: its own internal UUID becomes the thread root.
+        db.upsert_fetched_headers(&account_id, &inbox, &[header(1, None, "Original", 1000)])
+            .unwrap();
+        let page = db.list_messages(&inbox, 10, 0).unwrap();
+        let original = &page.messages[0];
+        let root = db
+            .get_message_detail(&inbox, &original.id)
+            .unwrap()
+            .unwrap()
+            .thread_root;
+        assert!(!root.is_empty());
+        // Reply anchored to the parent's thread root (what ComposePane now sends
+        // when the parent has no Message-ID).
+        let mut reply = header(2, Some("reply@x"), "Re: Original", 2000);
+        reply.in_reply_to = Some(root.clone());
+        db.upsert_fetched_headers(&account_id, &inbox, &[reply])
+            .unwrap();
+        // Both messages must land in the same thread.
+        let thread = db.list_thread_messages(&inbox, &root).unwrap();
+        assert_eq!(thread.len(), 2);
+        for m in &thread {
+            let detail = db.get_message_detail(&inbox, &m.id).unwrap().unwrap();
+            assert_eq!(detail.thread_root, root);
+        }
     }
 
     #[test]
